@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="108" y1="92" x2="912" y2="932" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#77724C"/>
+      <stop offset="0.58" stop-color="#666143"/>
+      <stop offset="1" stop-color="#4A432E"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="130" y1="130" x2="894" y2="894" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6A5A35"/>
+      <stop offset="1" stop-color="#3E3523"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="210" y1="170" x2="814" y2="862" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6DA92"/>
+      <stop offset="1" stop-color="#C08A43"/>
+    </linearGradient>
+    <linearGradient id="textFill" x1="260" y1="520" x2="770" y2="850" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5DD9A"/>
+      <stop offset="1" stop-color="#E5C97F"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="260" y1="556" x2="764" y2="556" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C46D31"/>
+      <stop offset="1" stop-color="#AF5A29"/>
+    </linearGradient>
+    <filter id="shadow" x="90" y="90" width="844" height="844" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feOffset dy="16"/>
+      <feGaussianBlur stdDeviation="20"/>
+      <feColorMatrix values="0 0 0 0 0.160784 0 0 0 0 0.109804 0 0 0 0 0.0509804 0 0 0 0.35 0"/>
+      <feBlend in2="BackgroundImageFix" result="effect1_dropShadow_0_1"/>
+      <feBlend in="SourceGraphic" in2="effect1_dropShadow_0_1" result="shape"/>
+    </filter>
+    <filter id="softGlow" x="168" y="208" width="688" height="516" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feGaussianBlur stdDeviation="8"/>
+      <feComposite in2="SourceAlpha" operator="in"/>
+      <feColorMatrix values="0 0 0 0 0.960784 0 0 0 0 0.85098 0 0 0 0 0.584314 0 0 0 0.22 0"/>
+      <feBlend in2="BackgroundImageFix" result="effect1"/>
+      <feBlend in="SourceGraphic" in2="effect1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="224" fill="url(#bg)"/>
+  <rect x="72" y="72" width="880" height="880" rx="224" stroke="#F0D58D" stroke-opacity="0.22" stroke-width="6"/>
+
+  <path d="M250 748C332 666 422 612 512 588C602 612 692 666 774 748" stroke="#E8BF71" stroke-width="18" stroke-linecap="round" opacity="0.88"/>
+
+  <g opacity="0.92">
+    <path d="M710 194C748 236 772 290 776 348" stroke="#F1D48C" stroke-width="11" stroke-linecap="round"/>
+    <path d="M716 200C676 246 648 300 634 368" stroke="#F1D48C" stroke-width="11" stroke-linecap="round"/>
+    <path d="M676 238C720 258 754 290 784 330" stroke="#F1D48C" stroke-width="11" stroke-linecap="round"/>
+    <circle cx="734" cy="302" r="15" fill="#F1D48C"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="130" y="130" width="764" height="764" rx="154" fill="url(#panel)" stroke="url(#frame)" stroke-width="18"/>
+
+    <g filter="url(#softGlow)" opacity="0.78">
+      <ellipse cx="512" cy="400" rx="210" ry="106" stroke="#EFD68E" stroke-width="8"/>
+      <ellipse cx="512" cy="400" rx="210" ry="106" transform="rotate(60 512 400)" stroke="#EFD68E" stroke-width="8"/>
+      <ellipse cx="512" cy="400" rx="210" ry="106" transform="rotate(-60 512 400)" stroke="#EFD68E" stroke-width="8"/>
+      <circle cx="512" cy="400" r="14" fill="#EFD68E"/>
+    </g>
+
+    <path d="M260 640H764" stroke="url(#accent)" stroke-width="22" stroke-linecap="round"/>
+    <text x="512" y="804" fill="url(#textFill)" stroke="#4A432E" stroke-width="12" paint-order="stroke" font-family="Arial Black, Impact, sans-serif" font-size="156" letter-spacing="8" text-anchor="middle">GTRT</text>
+  </g>
+
+  <circle cx="220" cy="242" r="11" fill="#F2E8C6"/>
+  <circle cx="820" cy="240" r="8" fill="#F4B768"/>
+  <circle cx="842" cy="294" r="6" fill="#E7D08F"/>
+</svg>

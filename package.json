@@ -71,17 +71,20 @@
       "package.json"
     ],
     "mac": {
+      "icon": "build/icons/icon.icns",
       "target": [
         "dmg"
       ],
       "category": "public.app-category.photography"
     },
     "win": {
+      "icon": "build/icons/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
+      "icon": "build/icons/icon-linux.png",
       "target": [
         "AppImage"
       ],
