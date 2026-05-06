@@ -4,6 +4,25 @@
   "version": "1.0.0",
   "description": "Desktop utility for repairing and organizing Google Takeout photo and video exports locally.",
   "author": "Matija Kogovsek",
+  "license": "MIT",
+  "homepage": "https://github.com/kogovsekm/google-takeout-repair-tool",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kogovsekm/google-takeout-repair-tool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kogovsekm/google-takeout-repair-tool/issues"
+  },
+  "keywords": [
+    "google-takeout",
+    "takeout",
+    "metadata",
+    "photo-repair",
+    "media-organizer",
+    "exif",
+    "electron",
+    "desktop-app"
+  ],
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
