@@ -4,9 +4,59 @@ If you find this app valuable, consider giving it a star.
 
 # Google Takeout Repair Tool
 
-Desktop utility for repairing and organizing Google Takeout photo/video exports.
+![GitHub release](https://img.shields.io/github/v/release/kogovsekm/google-takeout-repair-tool)
+![GitHub downloads](https://img.shields.io/github/downloads/kogovsekm/google-takeout-repair-tool/total)
+![License](https://img.shields.io/github/license/kogovsekm/google-takeout-repair-tool)
+
+Desktop utility for repairing and organizing Google Takeout photo and video exports.
+
+Built as a local desktop tool to make Google Takeout cleanup easier, faster, and less frustrating.
 
 It runs fully local on your machine using Electron.
+
+If your Google Takeout export has missing photo dates, broken metadata, JSON sidecars, wrong folder structure, or media files that need reorganizing after export, this app is built for that exact workflow.
+
+It helps restore metadata from Google Takeout sidecar JSON files, repair dates and descriptions where possible, and organize exports into cleaner year or year/month folders without uploading anything to the cloud.
+
+> [!TIP]
+> This tool is designed for people searching for ways to fix Google Takeout metadata, restore photo dates from sidecar JSON files, and reorganize exported media before importing it elsewhere.
+
+## Why This Exists
+
+Google Takeout exports often leave people with media libraries that are hard to import back into photo tools cleanly.
+
+Common search terms this project is designed to solve:
+
+- Google Takeout metadata missing
+- restore photo dates from Google Takeout
+- fix Google Takeout JSON sidecars
+- organize Google Takeout photos by year and month
+- repair EXIF metadata from Google Takeout exports
+
+## Who This Is For
+
+- People moving out of Google Photos and trying to preserve timestamps and metadata.
+- Anyone with a Takeout archive full of sidecar JSON files and messy folders.
+- Users who want a local desktop workflow instead of an online upload service.
+
+## Common Google Takeout Problems This Fixes
+
+- Photos and videos sorted into the wrong chronological order after export.
+- Metadata trapped in Google Takeout sidecar JSON files instead of media files.
+- Exports that need clean year or year/month folder structures before reimport.
+- Already-exported folders that need flattening, cleanup, and safer reorganization.
+
+## Before And After
+
+Before:
+Google Takeout media spread across nested export folders with separate JSON sidecars and inconsistent timestamps.
+
+After:
+Media copied or reorganized into cleaner folders with repaired metadata where available, safer names, and clearer import-ready structure.
+
+## Feedback
+
+If your Takeout export has an edge case this tool does not handle yet, open an issue in the repository and include a small reproducible example if possible.
 
 # Installation
 
@@ -20,6 +70,9 @@ Download the release asset that matches your operating system from the GitHub Re
 If you build the installers locally, open the `release` folder in the project root and choose the same file names listed above.
 
 Checksums for the release artifacts are provided in `release/SHA256SUMS.txt` and can be used to verify downloads.
+
+> [!IMPORTANT]
+> Always verify that you downloaded the installer for the correct platform before opening it.
 
 
 # Installation caveats
@@ -77,6 +130,22 @@ This app has two tabs:
 - Node.js LTS
 - npm
 
+### Quick Start
+
+```bash
+# install dependencies
+npm install
+
+# start the desktop app in development mode
+npm run dev
+
+# create production bundles
+npm run build
+
+# run tests
+npm run test
+```
+
 ### Install
 
 ```bash
@@ -117,26 +186,32 @@ npm run dist
 
 Output folder:
 
-- release
+```text
+release/
+```
 
 ## Scripts
 
-- npm run dev: run renderer and Electron in development mode.
-- npm run build: build renderer and Electron bundles.
-- npm run dist: package installers via electron-builder.
-- npm run test: run unit/integration tests with Vitest.
-- npm run lint: run ESLint.
-- npm run benchmark: run synthetic processing benchmark.
+```bash
+npm run dev        # run renderer and Electron in development mode
+npm run build      # build renderer and Electron bundles
+npm run dist       # package installers via electron-builder
+npm run test       # run unit/integration tests with Vitest
+npm run lint       # run ESLint
+npm run benchmark  # run synthetic processing benchmark
+```
 
 ## Project Structure
 
-- electron/main.ts: app lifecycle and IPC handlers.
-- electron/preload.ts: secure renderer bridge.
-- electron/processor.ts: repair and post-process logic.
-- src/App.tsx: primary renderer UI (tabs, actions, progress, logs).
-- src/components/ProcessReportDialog.tsx: repair report dialog.
-- src/components/OrganiseReportDialog.tsx: organise report dialog.
-- src/types/electronApi.ts: shared renderer-side API types.
+```text
+electron/main.ts                         app lifecycle and IPC handlers
+electron/preload.ts                     secure renderer bridge
+electron/processor.ts                   repair and post-process logic
+src/App.tsx                             primary renderer UI (tabs, actions, progress, logs)
+src/components/ProcessReportDialog.tsx  repair report dialog
+src/components/OrganiseReportDialog.tsx organise report dialog
+src/types/electronApi.ts                shared renderer-side API types
+```
 
 ## Safety Notes
 
