@@ -6,7 +6,29 @@ If you find this app valuable, consider giving it a star.
 
 Desktop utility for repairing and organizing Google Takeout photo/video exports.
 
-It runs fully local on your machine using Electron + React + TypeScript.
+It runs fully local on your machine using Electron.
+
+# Installation
+
+Download the release asset that matches your operating system from the GitHub Releases page.
+
+- macOS Apple Silicon: use `Google Takeout Repair Tool-1.0.0-arm64.dmg`
+- macOS Intel: use `Google Takeout Repair Tool-1.0.0.dmg`
+- Windows 64-bit: use `Google Takeout Repair Tool Setup 1.0.0.exe`
+- Linux 64-bit: use `Google Takeout Repair Tool-1.0.0.AppImage`
+
+If you build the installers locally, open the `release` folder in the project root and choose the same file names listed above.
+
+Checksums for the release artifacts are provided in `release/SHA256SUMS.txt` and can be used to verify downloads.
+
+
+# Installation caveats
+
+- macOS: because the app is currently distributed without Apple notarization, Gatekeeper may block the first launch. If that happens, open System Settings > Privacy & Security, scroll to the security section near the bottom, and allow the blocked app to run. Then launch it again.
+- macOS: Apple Silicon users should prefer the `-arm64.dmg` build. The plain `.dmg` build is for Intel Macs and may require Rosetta on Apple Silicon.
+- Windows: SmartScreen may warn that the app is from an unrecognized publisher because the installer is not code-signed with a trusted commercial certificate yet. If you trust the release, choose More info and then Run anyway.
+- Linux: the AppImage may not start until it has executable permission. If needed, run `chmod +x "Google Takeout Repair Tool-1.0.0.AppImage"` and launch it again.
+- Linux: some distributions need FUSE/AppImage support packages installed before AppImages will open.
 
 ## What It Does
 
