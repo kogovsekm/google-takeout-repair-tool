@@ -2,6 +2,8 @@
   "name": "google-takeout-repair-tool",
   "private": true,
   "version": "1.0.0",
+  "description": "Desktop utility for repairing and organizing Google Takeout photo and video exports locally.",
+  "author": "Matija Kogovsek",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -71,17 +73,20 @@
       "package.json"
     ],
     "mac": {
+      "icon": "build/icons/icon.icns",
       "target": [
         "dmg"
       ],
       "category": "public.app-category.photography"
     },
     "win": {
+      "icon": "build/icons/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
+      "icon": "build/icons/icon-linux.png",
       "target": [
         "AppImage"
       ],
