@@ -1,0 +1,91 @@
+{
+  "name": "google-takeout-repair-tool",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "concurrently -k \"npm:dev:electron:build\" \"npm:dev:electron:run\"",
+    "dev:electron:build": "tsc -p tsconfig.electron.json --watch",
+    "dev:electron:run": "wait-on http://localhost:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "tsc -b && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "dist": "npm run build && electron-builder",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "benchmark": "npm run build:electron && node scripts/benchmark.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/figtree": "5.2.10",
+    "@radix-ui/react-accordion": "1.2.12",
+    "@radix-ui/react-dialog": "1.1.15",
+    "date-fns": "4.1.0",
+    "exiftool-vendored": "35.19.0",
+    "lucide-react": "^1.14.0",
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@rolldown/plugin-babel": "0.2.3",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "24.12.2",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.1",
+    "autoprefixer": "10.4.21",
+    "babel-plugin-react-compiler": "1.0.0",
+    "concurrently": "9.2.1",
+    "cross-env": "10.1.0",
+    "electron": "41.5.0",
+    "electron-builder": "26.8.1",
+    "eslint": "10.2.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.2",
+    "globals": "17.5.0",
+    "jsdom": "29.1.1",
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.17",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.58.2",
+    "vite": "8.0.10",
+    "vitest": "4.1.5",
+    "wait-on": "9.0.5"
+  },
+  "build": {
+    "appId": "com.googletakeoutrepairtool.desktop",
+    "productName": "Google Takeout Repair Tool",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.photography"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics"
+    }
+  }
+}
