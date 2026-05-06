@@ -20,6 +20,9 @@ type MetadataApplyResult = {
   mirroredMetadata: boolean;
 };
 
+const EXIFTOOL_METADATA_TIMEOUT_MS = 45000;
+const EXIFTOOL_MOV_RESTORE_TIMEOUT_MS = 20000;
+
 const mediaExtensions = new Set([
   ".jpg",
   ".jpeg",
@@ -487,6 +490,35 @@ const normalizeError = (error: unknown): string => {
 };
 
 /**
+ * @description Applies a timeout boundary to an async operation so processing can continue if a subprocess stalls.
+ * @param operationName Human-readable operation label for error messages.
+ * @param timeoutMs Timeout duration in milliseconds.
+ * @param task Async task to execute.
+ * @returns Task result when completed before timeout.
+ */
+const withTimeout = async <T>(
+  operationName: string,
+  timeoutMs: number,
+  task: () => Promise<T>,
+): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      void task().then(resolve).catch(reject);
+    });
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+/**
  * @description Determines whether parsed sidecar metadata contains useful fields to merge.
  * @param sidecarMetadata Parsed sidecar metadata.
  * @returns True when at least one meaningful metadata field exists.
@@ -674,9 +706,12 @@ export const processTakeoutFolder = async (
       if (request.options.writeMetadata) {
         if (sidecarMetadata && hasUsefulMetadata(sidecarMetadata)) {
           try {
-            const metadataResult = await applyMetadata(
-              currentMediaPath,
-              sidecarMetadata,
+            const metadataResult = await withTimeout(
+              "Metadata merge",
+              EXIFTOOL_METADATA_TIMEOUT_MS,
+              async () => {
+                return applyMetadata(currentMediaPath, sidecarMetadata);
+              },
             );
             metadataMerged = true;
             metadataMirrored = metadataResult.mirroredMetadata;
@@ -720,8 +755,13 @@ export const processTakeoutFolder = async (
 
       if (request.options.writeMetadata) {
         try {
-          const updatedMediaPath =
-            await maybeRestoreMovExtension(currentMediaPath);
+          const updatedMediaPath = await withTimeout(
+            "MOV extension restore",
+            EXIFTOOL_MOV_RESTORE_TIMEOUT_MS,
+            async () => {
+              return maybeRestoreMovExtension(currentMediaPath);
+            },
+          );
           if (updatedMediaPath !== currentMediaPath) {
             restoredMov = true;
           }
