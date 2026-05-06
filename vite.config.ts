@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: "./",
   plugins: [react(), babel({ presets: [reactCompilerPreset()] })],
   test: {
     globals: true,
