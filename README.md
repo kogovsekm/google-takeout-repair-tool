@@ -1,183 +1,127 @@
-# Google Takeout Repair Tool (Electron + React + TypeScript)
+# Endorsement
 
-An independent desktop repair utility for Google Takeout exports, focused on these three features:
+If you find this app valuable, consider giving it a star.
 
-- Write metadata from Google Takeout sidecar JSON into media files.
-- Create year and month subfolders to avoid naming conflicts.
-- Restore MOV extensions for QuickTime-branded files as part of metadata restoration.
+# Google Takeout Repair Tool
 
-The app processes files in place inside your selected folder.
+Desktop utility for repairing and organizing Google Takeout photo/video exports.
 
-## Included Features
+It runs fully local on your machine using Electron + React + TypeScript.
 
-- Folder picker for your Google Photos Takeout extraction.
-- UX-friendly warnings for:
-  - no folder selected
-  - incorrect folder selected (for example, no media files found)
-  - missing desktop bridge
-- Real-time progress bar and live log panel.
-- Split-pane workflow with source/destination selectors on the left and repair options on the right.
-- Duplicate-safe renaming during moves and extension restoration.
-- JSON sidecar cleanup after processing.
+## What It Does
 
-## Tech Stack
+This app has two tabs:
 
-- Electron
-- React
-- TypeScript
-- Tailwind CSS
-- exiftool-vendored (bundled metadata engine, no global exiftool required)
+- Repair: restore metadata and copy media into a clean output structure.
+- Organise: reorganize an already exported folder in place (post-processing).
 
-## Processing Behavior
+## Core Features
 
-- Write metadata:
-  - Reads sidecar JSON next to media files.
-  - Writes capture date/time, title, description, and available GPS metadata to media.
-  - Mirrors compatible metadata across EXIF, XMP, IPTC, and QuickTime-friendly tags where possible.
-  - Syncs the file modified time from the trusted Takeout sidecar capture timestamp.
-  - Restores `.MOV` extensions for QuickTime-branded files.
-  - Skips date restoration and file-time sync when no trusted sidecar timestamp is available.
-- Create year-month subfolders:
-  - Uses sidecar taken time when available.
-  - Falls back to file modification time.
-  - Moves media into YEAR/MONTH structure.
-- Duplicate handling:
-  - If target filename already exists, app appends a random integer suffix.
-- JSON cleanup:
-  - Removes discovered .json sidecars at the end.
+- Local-first desktop app (no cloud upload).
+- Repair workflow with separate source and output folders.
+- Organise workflow for flattening folder levels.
+- Real-time progress updates and live logs.
+- Run reports with warnings and problem files.
+- Light and dark themes.
+- Tab lock while a job is active, with warning toast when switching tabs.
 
-## Upfront Notes
+## Repair Tab Features
 
-- The app modifies and moves files in your selected folder.
-- Start with a backup copy of your Takeout data for first runs.
-- The app currently focuses only on the three requested features.
+- Restore metadata from Google sidecar JSON files.
+  - Writes date/time, title, description, and available GPS metadata.
+  - Mirrors compatible metadata to multiple tag families.
+  - Syncs filesystem modified time from trusted sidecar timestamp when available.
+  - Restores `.MOV` extension for QuickTime-branded files.
+- Create year-month subfolders (YYYY/MM).
+- Create year subfolders only (YYYY).
+- Mutual exclusivity between folder modes:
+  - Selecting year-only disables year-month.
+  - Selecting year-month disables year-only.
+- Duplicate-safe file naming using collision resolution.
+- Sidecar cleanup summary after processing.
 
-## Thorough TODO: Start, Run, Build, Package
+## Organise Tab Features
 
-### 1. Install prerequisites
+- Flatten months into years.
+- Flatten years into root.
+- Remove empty folders.
+- In-place moves with collision-safe destination names.
+- Separate progress channel and dedicated organise report dialog.
 
-Option A (recommended on macOS with Homebrew):
+## How To Run
 
-```bash
-brew install node
-```
+### Prerequisites
 
-Option B:
-- Install Node.js LTS from the official installer.
+- Node.js LTS
+- npm
 
-Check versions:
-
-```bash
-node -v
-npm -v
-```
-
-### 2. Install project dependencies
-
-From project root:
+### Install
 
 ```bash
 npm install
 ```
 
-### 3. Run in development mode
-
-This starts both Vite (renderer) and Electron (desktop shell):
+### Start Development App
 
 ```bash
 npm run dev
 ```
 
-### 4. Use the app
-
-1. Click Select Google Takeout Folder.
-2. Keep Restore metadata checked (default).
-3. Toggle Create year-month subfolders as needed.
-4. Click Start Processing.
-5. Watch progress and logs.
-
-### 5. Build production artifacts
-
-Compile renderer and Electron process:
+### Build Production App
 
 ```bash
 npm run build
 ```
 
-### 6. Create installable desktop bundles
+### Run Tests
 
-Generate installers for your current OS target:
+```bash
+npm run test
+```
+
+## Packaging
+
+Configured installer targets:
+
+- macOS: DMG
+- Windows: NSIS
+- Linux: AppImage
+
+Build installers for the current host:
 
 ```bash
 npm run dist
 ```
 
-Output is created in:
+Output folder:
 
 - release
 
-### 7. Cross-platform packaging notes
-
-- macOS: DMG target configured.
-- Windows: NSIS installer target configured.
-- Linux: AppImage target configured.
-
-For real cross-OS distribution, build on each OS (or use a CI matrix) because native signing/notarization and platform dependencies differ.
-
-### 8. Optional signing and release hardening
-
-Before public release, add platform-specific signing:
-
-- Apple Developer signing + notarization for macOS.
-- Code signing certificate for Windows.
-- Optional signing for Linux packages.
-
-### 9. Troubleshooting quick checks
-
-- If app opens in browser only, use npm run dev (not vite alone).
-- If folder is rejected, verify it contains media files.
-- If metadata is sparse, check whether sidecar JSON files exist next to media.
-- If a file has no trusted Takeout capture timestamp, the app will preserve its existing media date fields and filesystem time instead of guessing.
-
 ## Scripts
 
-- npm run dev: Run renderer + Electron with live reload.
-- npm run build: Build renderer and Electron output.
-- npm run dist: Build and package app installers.
-- npm run lint: Run ESLint.
-- npm run benchmark: Run standalone stress benchmark with default 30000 synthetic images.
+- npm run dev: run renderer and Electron in development mode.
+- npm run build: build renderer and Electron bundles.
+- npm run dist: package installers via electron-builder.
+- npm run test: run unit/integration tests with Vitest.
+- npm run lint: run ESLint.
+- npm run benchmark: run synthetic processing benchmark.
 
-## Benchmark Usage
+## Project Structure
 
-Use the benchmark separately from tests to simulate realistic processing (read sidecar metadata, copy files, and write into year/month folders).
+- electron/main.ts: app lifecycle and IPC handlers.
+- electron/preload.ts: secure renderer bridge.
+- electron/processor.ts: repair and post-process logic.
+- src/App.tsx: primary renderer UI (tabs, actions, progress, logs).
+- src/components/ProcessReportDialog.tsx: repair report dialog.
+- src/components/OrganiseReportDialog.tsx: organise report dialog.
+- src/types/electronApi.ts: shared renderer-side API types.
 
-- Default run (30000 images):
+## Safety Notes
 
-```bash
-npm run benchmark
-```
-
-- Custom image count with explicit safe flag:
-
-```bash
-npm run benchmark -- --images=30000
-```
-
-Rules:
-
-- Only `--images=<number>` is accepted for custom values.
-- Minimum allowed value is 10000.
-- Invalid values print a warning and stop.
-- The benchmark uses temporary folders and removes them at the end, so no benchmark artifacts remain in your project folders.
-
-## Project Layout
-
-- electron/main.ts: Desktop window and IPC wiring.
-- electron/preload.ts: Safe renderer bridge API.
-- electron/processor.ts: File scanning, metadata writing, MOV restoration, folder grouping, JSON cleanup.
-- src/App.tsx: Tailwind UI and UX flow.
-- src/types/electronApi.ts: Renderer-side IPC types.
+- Repair writes into a destination folder you choose.
+- Organise works in place on the selected folder.
+- Keep a backup of original Takeout exports before large runs.
 
 ## License
 
-Set your preferred license for this new project as needed.
+Add your preferred license before public distribution.
