@@ -124,4 +124,4 @@ Output folder:
 
 ## License
 
-Add your preferred license before public distribution.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
