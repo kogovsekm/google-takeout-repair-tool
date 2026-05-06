@@ -1,8 +1,6 @@
-![Google Takeout Repair Tool desktop screenshot](src/assets/hero.png)
+![Google Takeout Repair Tool desktop screenshot](src/assets/app_example.png)
 
 # Google Takeout Repair Tool
-
-If you find this app valuable, consider giving it a star.
 
 ![GitHub release](https://img.shields.io/github/v/release/kogovsekm/google-takeout-repair-tool)
 ![GitHub downloads](https://img.shields.io/github/downloads/kogovsekm/google-takeout-repair-tool/total)
@@ -20,6 +18,10 @@ It helps restore metadata from Google Takeout sidecar JSON files, repair dates a
 
 > [!TIP]
 > This tool is designed for people searching for ways to fix Google Takeout metadata, restore photo dates from sidecar JSON files, and reorganize exported media before importing it elsewhere.
+
+## Endorsement
+
+If you find this app valuable, consider giving it a star :star:.
 
 ## Why This Exists
 
