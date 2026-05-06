@@ -4,7 +4,7 @@
 
 ![GitHub release](https://img.shields.io/github/v/release/kogovsekm/google-takeout-repair-tool)
 ![GitHub downloads](https://img.shields.io/github/downloads/kogovsekm/google-takeout-repair-tool/total)
-![License](https://img.shields.io/github/license/kogovsekm/google-takeout-repair-tool)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Desktop utility for repairing and organizing Google Takeout photo and video exports.
 
