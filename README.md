@@ -1,8 +1,8 @@
-# Endorsement
-
-If you find this app valuable, consider giving it a star.
+![Google Takeout Repair Tool desktop screenshot](src/assets/hero.png)
 
 # Google Takeout Repair Tool
+
+If you find this app valuable, consider giving it a star.
 
 ![GitHub release](https://img.shields.io/github/v/release/kogovsekm/google-takeout-repair-tool)
 ![GitHub downloads](https://img.shields.io/github/downloads/kogovsekm/google-takeout-repair-tool/total)
