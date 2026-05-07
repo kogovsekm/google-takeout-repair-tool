@@ -42,6 +42,14 @@ const api = {
     return summary as ProcessSummary;
   },
   /**
+   * @description Requests cancellation of an active repair run.
+   * @returns True when an in-flight repair run was signaled to abort.
+   */
+  abortProcess: async (): Promise<boolean> => {
+    const aborted = await ipcRenderer.invoke("takeout:abort-process");
+    return aborted === true;
+  },
+  /**
    * @description Opens a folder in the operating system file manager.
    * @param folderPath Destination folder path.
    * @returns Promise that resolves after the request is handed to the OS.

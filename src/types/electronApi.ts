@@ -97,6 +97,7 @@ export type TakeoutApi = {
     defaultPath?: string,
   ) => Promise<string | null>;
   processFolder: (request: ProcessRequest) => Promise<ProcessSummary>;
+  abortProcess: () => Promise<boolean>;
   openFolder: (folderPath: string) => Promise<void>;
   saveReport: (
     defaultFileName: string,

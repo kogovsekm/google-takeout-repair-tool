@@ -46,6 +46,7 @@ type TabId = "repair" | "organise";
 type Toast = { id: string; message: string };
 
 const THEME_STORAGE_KEY = "takeout-repair-theme";
+const PROCESS_ABORTED_MESSAGE = "Processing aborted by user.";
 
 type CheckboxRowProps = {
   label: React.ReactNode;
@@ -171,6 +172,7 @@ const App = () => {
     typeof desktopApi?.onProgress === "function" &&
     typeof desktopApi.selectFolder === "function" &&
     typeof desktopApi.processFolder === "function" &&
+    typeof desktopApi.abortProcess === "function" &&
     typeof desktopApi.openFolder === "function" &&
     typeof desktopApi.saveReport === "function";
   const [selectedInputFolder, setSelectedInputFolder] = useState<string | null>(
@@ -182,6 +184,7 @@ const App = () => {
   const [lastInputFolder, setLastInputFolder] = useState<string | null>(null);
   const [lastOutputFolder, setLastOutputFolder] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isAbortRequested, setIsAbortRequested] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [completedSummary, setCompletedSummary] =
     useState<ProcessSummary | null>(null);
@@ -590,6 +593,7 @@ const App = () => {
     }
 
     setIsProcessing(true);
+    setIsAbortRequested(false);
     setActiveJob("repair");
     setIsReportOpen(false);
     setCompletedSummary(null);
@@ -652,15 +656,18 @@ const App = () => {
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : "Unexpected processing error";
-      setWarningText(message);
-      setStatusText("Processing failed.");
+      const wasAborted = message === PROCESS_ABORTED_MESSAGE;
+      setWarningText(wasAborted ? null : message);
+      setStatusText(wasAborted ? "Processing aborted." : "Processing failed.");
       setLogs((current) => {
         const next: Array<LogEntry> = [
           ...current,
           {
             id: crypto.randomUUID(),
-            text: `[ERROR] ${message}`,
-            level: "error",
+            text: wasAborted
+              ? `[WARN] ${PROCESS_ABORTED_MESSAGE}`
+              : `[ERROR] ${message}`,
+            level: wasAborted ? "warn" : "error",
           },
         ];
 
@@ -668,7 +675,62 @@ const App = () => {
       });
     } finally {
       setIsProcessing(false);
+      setIsAbortRequested(false);
       setActiveJob(null);
+    }
+  };
+
+  /**
+   * @description Requests cancellation for the active repair run.
+   * @returns Promise that resolves after the abort request is sent.
+   */
+  const handleAbortProcessing = async (): Promise<void> => {
+    if (!hasDesktopApi || !isProcessing) {
+      return;
+    }
+
+    setWarningText(null);
+    setIsAbortRequested(true);
+    setStatusText("Abort requested. Finishing current step...");
+
+    try {
+      const aborted = await desktopApi.abortProcess();
+      if (!aborted) {
+        setIsAbortRequested(false);
+        setStatusText("No active repair run to abort.");
+        setLogs((current) => {
+          const next: Array<LogEntry> = [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              text: "[WARN] No active repair run was found for abort.",
+              level: "warn",
+            },
+          ];
+
+          return next.slice(-250);
+        });
+        return;
+      }
+
+      setLogs((current) => {
+        const next: Array<LogEntry> = [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            text: "[WARN] Abort requested by user.",
+            level: "warn",
+          },
+        ];
+
+        return next.slice(-250);
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Failed to request abort.";
+      setIsAbortRequested(false);
+      setWarningText(message);
+      setStatusText("Unable to send abort request.");
     }
   };
 
@@ -1336,28 +1398,51 @@ const App = () => {
               </div>
 
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleStartProcessing();
-                  }}
-                  disabled={
-                    isProcessing ||
-                    !selectedInputFolder ||
-                    !selectedOutputFolder
-                  }
-                  className={`inline-flex h-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#56b6c2] via-[#61afef] to-[#c678dd] px-4 py-3 font-display text-xl font-semibold text-[#1b1f2a] transition hover:from-[#7ad0da] hover:via-[#83c3ff] hover:to-[#d99bf0] disabled:cursor-not-allowed disabled:text-[#8f97a6] ${isLightTheme ? "disabled:from-[#c6cdd8] disabled:via-[#c6cdd8] disabled:to-[#c6cdd8]" : "disabled:from-[#5a6271] disabled:via-[#5a6271] disabled:to-[#5a6271] disabled:text-[#c5ccd9]"} ${isReadyToStartStatus && !isProcessing ? "ready-start-glow" : ""}`}
-                >
+                <div className="flex h-full flex-col gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleStartProcessing();
+                    }}
+                    disabled={
+                      isProcessing ||
+                      !selectedInputFolder ||
+                      !selectedOutputFolder
+                    }
+                    className={`inline-flex h-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#56b6c2] via-[#61afef] to-[#c678dd] px-4 py-3 font-display text-xl font-semibold text-[#1b1f2a] transition hover:from-[#7ad0da] hover:via-[#83c3ff] hover:to-[#d99bf0] disabled:cursor-not-allowed disabled:text-[#8f97a6] ${isLightTheme ? "disabled:from-[#c6cdd8] disabled:via-[#c6cdd8] disabled:to-[#c6cdd8]" : "disabled:from-[#5a6271] disabled:via-[#5a6271] disabled:to-[#5a6271] disabled:text-[#c5ccd9]"} ${isReadyToStartStatus && !isProcessing ? "ready-start-glow" : ""}`}
+                  >
+                    {isProcessing ? (
+                      <LoaderCircle
+                        className="h-5 w-5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Rocket className="h-5 w-5" aria-hidden="true" />
+                    )}
+                    {isProcessing ? "Repairing..." : "Start Repair Run"}
+                  </button>
+
                   {isProcessing ? (
-                    <LoaderCircle
-                      className="h-5 w-5 animate-spin"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <Rocket className="h-5 w-5" aria-hidden="true" />
-                  )}
-                  {isProcessing ? "Repairing..." : "Start Repair Run"}
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleAbortProcessing();
+                      }}
+                      disabled={isAbortRequested}
+                      className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-4 py-3 font-display text-lg font-semibold transition disabled:cursor-not-allowed ${isLightTheme ? "border-rose-400/45 bg-rose-100/75 text-rose-700 hover:border-rose-500/75 hover:bg-rose-100 disabled:opacity-65" : "border-rose-300/45 bg-rose-500/14 text-rose-200 hover:border-rose-300/70 hover:bg-rose-500/22 disabled:opacity-65"}`}
+                    >
+                      {isAbortRequested ? (
+                        <LoaderCircle
+                          className="h-5 w-5 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <CircleAlert className="h-5 w-5" aria-hidden="true" />
+                      )}
+                      {isAbortRequested ? "Aborting..." : "Abort process"}
+                    </button>
+                  ) : null}
+                </div>
 
                 <div
                   className={`rounded-2xl border px-4 py-3 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff]/90" : "border-[#61afef]/30 bg-[#252b38]/75"}`}
