@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { exiftool } from "exiftool-vendored";
+import { ExifTool } from "exiftool-vendored";
 
 import type {
   FileOutcome,
@@ -22,6 +22,14 @@ type MetadataApplyResult = {
 
 const EXIFTOOL_METADATA_TIMEOUT_MS = 45000;
 const EXIFTOOL_MOV_RESTORE_TIMEOUT_MS = 20000;
+const PROCESS_ABORTED_MESSAGE = "Processing aborted by user.";
+
+type ExifToolClient = InstanceType<typeof ExifTool>;
+
+type ProcessorRuntimeOptions = {
+  metadataTimeoutMs: number;
+  movRestoreTimeoutMs: number;
+};
 
 const mediaExtensions = new Set([
   ".jpg",
@@ -302,6 +310,7 @@ const toIsoDate = (value: Date): string => {
 const applyMetadata = async (
   mediaPath: string,
   sidecarMetadata: SidecarMetadata,
+  exiftoolClient: ExifToolClient,
 ): Promise<MetadataApplyResult> => {
   const tags: Record<string, string | number> = {};
   let mirroredMetadata = false;
@@ -347,7 +356,7 @@ const applyMetadata = async (
   }
 
   if (Object.keys(tags).length > 0) {
-    await exiftool.write(mediaPath, tags, ["-overwrite_original"]);
+    await exiftoolClient.write(mediaPath, tags, ["-overwrite_original"]);
   }
 
   return {
@@ -373,13 +382,16 @@ const syncFilesystemTime = async (
  * @param mediaPath Media file path.
  * @returns Updated media path, possibly unchanged.
  */
-const maybeRestoreMovExtension = async (mediaPath: string): Promise<string> => {
+const maybeRestoreMovExtension = async (
+  mediaPath: string,
+  exiftoolClient: ExifToolClient,
+): Promise<string> => {
   const currentExtension = path.extname(mediaPath).toLowerCase();
   if (currentExtension === ".mov") {
     return mediaPath;
   }
 
-  const exifTags = await exiftool.read(mediaPath);
+  const exifTags = await exiftoolClient.read(mediaPath);
   const majorBrandRaw = (exifTags as Record<string, unknown>).MajorBrand;
   const majorBrand =
     typeof majorBrandRaw === "string" ? majorBrandRaw.toLowerCase() : "";
@@ -500,13 +512,26 @@ const withTimeout = async <T>(
   operationName: string,
   timeoutMs: number,
   task: () => Promise<T>,
+  onTimeout?: () => Promise<void>,
 ): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   try {
     return await new Promise<T>((resolve, reject) => {
       timeoutId = setTimeout(() => {
-        reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
+        void (async () => {
+          if (onTimeout) {
+            await onTimeout();
+          }
+        })()
+          .catch(() => {
+            return;
+          })
+          .finally(() => {
+            reject(
+              new Error(`${operationName} timed out after ${timeoutMs}ms`),
+            );
+          });
       }, timeoutMs);
 
       void task().then(resolve).catch(reject);
@@ -515,6 +540,12 @@ const withTimeout = async <T>(
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
+  }
+};
+
+const throwIfAborted = (abortSignal?: AbortSignal): void => {
+  if (abortSignal?.aborted) {
+    throw new Error(PROCESS_ABORTED_MESSAGE);
   }
 };
 
@@ -625,10 +656,33 @@ const createProcessReport = async (
 export const processTakeoutFolder = async (
   request: ProcessRequest,
   onProgress: (update: ProgressUpdate) => void,
+  abortSignal?: AbortSignal,
+  runtimeOptions?: Partial<ProcessorRuntimeOptions>,
 ): Promise<ProcessSummary> => {
   const startedAt = Date.now();
   const inputPath = request.inputPath;
   const outputPath = request.outputPath;
+  const metadataTimeoutMs =
+    runtimeOptions?.metadataTimeoutMs ?? EXIFTOOL_METADATA_TIMEOUT_MS;
+  const movRestoreTimeoutMs =
+    runtimeOptions?.movRestoreTimeoutMs ?? EXIFTOOL_MOV_RESTORE_TIMEOUT_MS;
+  let exiftoolClient = new ExifTool({
+    taskTimeoutMillis: metadataTimeoutMs,
+  });
+
+  const restartExifToolClient = async (): Promise<void> => {
+    try {
+      await exiftoolClient.end(false);
+    } catch {
+      // Ignore cleanup failures and continue with a fresh worker.
+    }
+
+    exiftoolClient = new ExifTool({
+      taskTimeoutMillis: metadataTimeoutMs,
+    });
+  };
+
+  throwIfAborted(abortSignal);
 
   const inputStats = await fs.stat(inputPath).catch(() => null);
 
@@ -669,203 +723,236 @@ export const processTakeoutFolder = async (
   const fileOutcomes: Array<FileOutcome> = [];
 
   let processed = 0;
-  for (const mediaFile of mediaFiles) {
-    const sidecarPath = await findSidecarPath(mediaFile, sidecarIndex);
-    let sidecarMetadata: SidecarMetadata | null = null;
 
-    if (sidecarPath) {
-      sidecarMetadata = await parseSidecarMetadata(sidecarPath);
-    }
+  try {
+    for (const mediaFile of mediaFiles) {
+      throwIfAborted(abortSignal);
+      const sidecarPath = await findSidecarPath(mediaFile, sidecarIndex);
+      let sidecarMetadata: SidecarMetadata | null = null;
 
-    const relativePath = path.relative(inputPath, mediaFile);
-    const relativeDir = path.dirname(relativePath);
+      if (sidecarPath) {
+        sidecarMetadata = await parseSidecarMetadata(sidecarPath);
+      }
 
-    const baseOutputDir = request.options.createYearMonthSubfolders
-      ? await resolveYearMonthTargetDir(outputPath, mediaFile, sidecarMetadata)
-      : request.options.createYearSubfoldersOnly
-        ? await resolveYearTargetDir(outputPath, mediaFile, sidecarMetadata)
-        : path.join(outputPath, relativeDir === "." ? "" : relativeDir);
+      const relativePath = path.relative(inputPath, mediaFile);
+      const relativeDir = path.dirname(relativePath);
 
-    await fs.mkdir(baseOutputDir, { recursive: true });
+      const baseOutputDir = request.options.createYearMonthSubfolders
+        ? await resolveYearMonthTargetDir(
+            outputPath,
+            mediaFile,
+            sidecarMetadata,
+          )
+        : request.options.createYearSubfoldersOnly
+          ? await resolveYearTargetDir(outputPath, mediaFile, sidecarMetadata)
+          : path.join(outputPath, relativeDir === "." ? "" : relativeDir);
 
-    const initialOutputPath = path.join(
-      baseOutputDir,
-      path.basename(mediaFile),
-    );
-    let currentMediaPath = await resolveCollisionPath(initialOutputPath);
-    const outcomeTags: Array<FileOutcomeTag> = [];
-    let outcomeMessage: string | null = null;
-    let metadataMerged = false;
-    let metadataMirrored = false;
-    let syncedFileTime = false;
-    let restoredMov = false;
+      await fs.mkdir(baseOutputDir, { recursive: true });
 
-    try {
-      await fs.copyFile(mediaFile, currentMediaPath);
+      const initialOutputPath = path.join(
+        baseOutputDir,
+        path.basename(mediaFile),
+      );
+      let currentMediaPath = await resolveCollisionPath(initialOutputPath);
+      const outcomeTags: Array<FileOutcomeTag> = [];
+      let outcomeMessage: string | null = null;
+      let metadataMerged = false;
+      let metadataMirrored = false;
+      let syncedFileTime = false;
+      let restoredMov = false;
 
-      if (request.options.writeMetadata) {
-        if (sidecarMetadata && hasUsefulMetadata(sidecarMetadata)) {
-          try {
-            const metadataResult = await withTimeout(
-              "Metadata merge",
-              EXIFTOOL_METADATA_TIMEOUT_MS,
-              async () => {
-                return applyMetadata(currentMediaPath, sidecarMetadata);
-              },
-            );
-            metadataMerged = true;
-            metadataMirrored = metadataResult.mirroredMetadata;
-          } catch (metadataError: unknown) {
-            const metadataMessage = `Metadata merge failed for ${path.basename(currentMediaPath)}: ${normalizeError(metadataError)}. File was copied without metadata changes.`;
-            warnings.push(metadataMessage);
-            outcomeTags.push("warning");
-            outcomeMessage = metadataMessage;
-            problemFiles.push({
-              filePath: currentMediaPath,
-              message: metadataMessage,
-            });
-          }
+      try {
+        throwIfAborted(abortSignal);
+        await fs.copyFile(mediaFile, currentMediaPath);
 
-          if (sidecarMetadata.takenAt) {
+        if (request.options.writeMetadata) {
+          if (sidecarMetadata && hasUsefulMetadata(sidecarMetadata)) {
             try {
-              await syncFilesystemTime(
-                currentMediaPath,
-                sidecarMetadata.takenAt,
+              const metadataResult = await withTimeout(
+                "Metadata merge",
+                metadataTimeoutMs,
+                async () => {
+                  return applyMetadata(
+                    currentMediaPath,
+                    sidecarMetadata,
+                    exiftoolClient,
+                  );
+                },
+                restartExifToolClient,
               );
-              syncedFileTime = true;
-            } catch (filesystemTimeError: unknown) {
-              const filesystemTimeMessage = `Filesystem time sync failed for ${path.basename(currentMediaPath)}: ${normalizeError(filesystemTimeError)}. Original filesystem times were preserved.`;
-              warnings.push(filesystemTimeMessage);
+              metadataMerged = true;
+              metadataMirrored = metadataResult.mirroredMetadata;
+            } catch (metadataError: unknown) {
+              const metadataMessage = `Metadata merge failed for ${path.basename(currentMediaPath)}: ${normalizeError(metadataError)}. File was copied without metadata changes.`;
+              warnings.push(metadataMessage);
               outcomeTags.push("warning");
-              outcomeMessage = outcomeMessage ?? filesystemTimeMessage;
+              outcomeMessage = metadataMessage;
               problemFiles.push({
                 filePath: currentMediaPath,
-                message: filesystemTimeMessage,
+                message: metadataMessage,
               });
             }
+
+            if (sidecarMetadata.takenAt) {
+              try {
+                await syncFilesystemTime(
+                  currentMediaPath,
+                  sidecarMetadata.takenAt,
+                );
+                syncedFileTime = true;
+              } catch (filesystemTimeError: unknown) {
+                const filesystemTimeMessage = `Filesystem time sync failed for ${path.basename(currentMediaPath)}: ${normalizeError(filesystemTimeError)}. Original filesystem times were preserved.`;
+                warnings.push(filesystemTimeMessage);
+                outcomeTags.push("warning");
+                outcomeMessage = outcomeMessage ?? filesystemTimeMessage;
+                problemFiles.push({
+                  filePath: currentMediaPath,
+                  message: filesystemTimeMessage,
+                });
+              }
+            }
+          } else {
+            const message = `No useful metadata found for ${path.basename(currentMediaPath)}`;
+            warnings.push(message);
+            skippedMetadataFiles.push(currentMediaPath);
+            outcomeTags.push("metadata skipped");
+            outcomeMessage = message;
           }
-        } else {
-          const message = `No useful metadata found for ${path.basename(currentMediaPath)}`;
-          warnings.push(message);
-          skippedMetadataFiles.push(currentMediaPath);
-          outcomeTags.push("metadata skipped");
-          outcomeMessage = message;
         }
-      }
 
-      if (request.options.writeMetadata) {
-        try {
-          const updatedMediaPath = await withTimeout(
-            "MOV extension restore",
-            EXIFTOOL_MOV_RESTORE_TIMEOUT_MS,
-            async () => {
-              return maybeRestoreMovExtension(currentMediaPath);
-            },
-          );
-          if (updatedMediaPath !== currentMediaPath) {
-            restoredMov = true;
+        if (request.options.writeMetadata) {
+          try {
+            const updatedMediaPath = await withTimeout(
+              "MOV extension restore",
+              movRestoreTimeoutMs,
+              async () => {
+                return maybeRestoreMovExtension(
+                  currentMediaPath,
+                  exiftoolClient,
+                );
+              },
+              restartExifToolClient,
+            );
+            if (updatedMediaPath !== currentMediaPath) {
+              restoredMov = true;
+            }
+            currentMediaPath = updatedMediaPath;
+          } catch (restoreError: unknown) {
+            const restoreMessage = `MOV extension restore failed for ${path.basename(currentMediaPath)}: ${normalizeError(restoreError)}. File was copied with original extension.`;
+            warnings.push(restoreMessage);
+            outcomeTags.push("warning");
+            outcomeMessage = outcomeMessage ?? restoreMessage;
+            problemFiles.push({
+              filePath: currentMediaPath,
+              message: restoreMessage,
+            });
           }
-          currentMediaPath = updatedMediaPath;
-        } catch (restoreError: unknown) {
-          const restoreMessage = `MOV extension restore failed for ${path.basename(currentMediaPath)}: ${normalizeError(restoreError)}. File was copied with original extension.`;
-          warnings.push(restoreMessage);
-          outcomeTags.push("warning");
-          outcomeMessage = outcomeMessage ?? restoreMessage;
-          problemFiles.push({
-            filePath: currentMediaPath,
-            message: restoreMessage,
-          });
         }
+
+        throwIfAborted(abortSignal);
+
+        if (metadataMerged) {
+          metadataMergedFiles.push(currentMediaPath);
+          outcomeTags.push("metadata merged");
+        }
+
+        if (metadataMirrored) {
+          metadataMirroredFiles.push(currentMediaPath);
+          outcomeTags.push("mirrored metadata");
+        }
+
+        if (syncedFileTime) {
+          syncedFileTimeFiles.push(currentMediaPath);
+          outcomeTags.push("synced file time");
+        }
+
+        if (restoredMov) {
+          restoredMovFiles.push(currentMediaPath);
+          outcomeTags.push("restored MOV");
+        }
+
+        if (outcomeTags.length === 0) {
+          outcomeTags.push("copied only");
+        }
+
+        fileOutcomes.push({
+          filePath: currentMediaPath,
+          tags: outcomeTags,
+          message: outcomeMessage,
+        });
+
+        processed += 1;
+        onProgress({
+          processed,
+          total: mediaFiles.length,
+          currentFile: currentMediaPath,
+          level: "info",
+          message: `Processed ${path.basename(currentMediaPath)}`,
+        });
+      } catch (error: unknown) {
+        if (
+          error instanceof Error &&
+          error.message === PROCESS_ABORTED_MESSAGE
+        ) {
+          throw error;
+        }
+
+        const message = `Failed processing ${path.basename(currentMediaPath)}: ${normalizeError(error)}`;
+        warnings.push(message);
+        outcomeTags.push("warning");
+        outcomeMessage = message;
+        fileOutcomes.push({
+          filePath: currentMediaPath,
+          tags: outcomeTags.length > 0 ? outcomeTags : ["warning"],
+          message: outcomeMessage,
+        });
+        problemFiles.push({
+          filePath: currentMediaPath,
+          message,
+        });
+        processed += 1;
+        onProgress({
+          processed,
+          total: mediaFiles.length,
+          currentFile: currentMediaPath,
+          level: "warn",
+          message,
+        });
       }
-
-      if (metadataMerged) {
-        metadataMergedFiles.push(currentMediaPath);
-        outcomeTags.push("metadata merged");
-      }
-
-      if (metadataMirrored) {
-        metadataMirroredFiles.push(currentMediaPath);
-        outcomeTags.push("mirrored metadata");
-      }
-
-      if (syncedFileTime) {
-        syncedFileTimeFiles.push(currentMediaPath);
-        outcomeTags.push("synced file time");
-      }
-
-      if (restoredMov) {
-        restoredMovFiles.push(currentMediaPath);
-        outcomeTags.push("restored MOV");
-      }
-
-      if (outcomeTags.length === 0) {
-        outcomeTags.push("copied only");
-      }
-
-      fileOutcomes.push({
-        filePath: currentMediaPath,
-        tags: outcomeTags,
-        message: outcomeMessage,
-      });
-
-      processed += 1;
-      onProgress({
-        processed,
-        total: mediaFiles.length,
-        currentFile: currentMediaPath,
-        level: "info",
-        message: `Processed ${path.basename(currentMediaPath)}`,
-      });
-    } catch (error: unknown) {
-      const message = `Failed processing ${path.basename(currentMediaPath)}: ${normalizeError(error)}`;
-      warnings.push(message);
-      outcomeTags.push("warning");
-      outcomeMessage = message;
-      fileOutcomes.push({
-        filePath: currentMediaPath,
-        tags: outcomeTags.length > 0 ? outcomeTags : ["warning"],
-        message: outcomeMessage,
-      });
-      problemFiles.push({
-        filePath: currentMediaPath,
-        message,
-      });
-      processed += 1;
-      onProgress({
-        processed,
-        total: mediaFiles.length,
-        currentFile: currentMediaPath,
-        level: "warn",
-        message,
-      });
     }
+
+    throwIfAborted(abortSignal);
+
+    const jsonFiles = Array.from(sidecarIndex.values());
+    const jsonRemoved = jsonFiles.length;
+    const report = await createProcessReport(
+      processed,
+      outputPath,
+      metadataMergedFiles,
+      metadataMirroredFiles,
+      syncedFileTimeFiles,
+      restoredMovFiles,
+      skippedMetadataFiles,
+      problemFiles,
+      fileOutcomes,
+    );
+
+    return {
+      processed,
+      total: mediaFiles.length,
+      jsonRemoved,
+      warnings,
+      durationMs: Date.now() - startedAt,
+      report,
+    };
+  } finally {
+    await exiftoolClient.end(false).catch(() => {
+      return;
+    });
   }
-
-  const jsonFiles = Array.from(sidecarIndex.values());
-  const jsonRemoved = jsonFiles.length;
-  const report = await createProcessReport(
-    processed,
-    outputPath,
-    metadataMergedFiles,
-    metadataMirroredFiles,
-    syncedFileTimeFiles,
-    restoredMovFiles,
-    skippedMetadataFiles,
-    problemFiles,
-    fileOutcomes,
-  );
-
-  await exiftool.end(false);
-
-  return {
-    processed,
-    total: mediaFiles.length,
-    jsonRemoved,
-    warnings,
-    durationMs: Date.now() - startedAt,
-    report,
-  };
 };
+
+export { PROCESS_ABORTED_MESSAGE };
 
 /**
  * @description Returns true when a folder name looks like a 4-digit year.

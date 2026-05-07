@@ -14,6 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
+let activeRepairAbortController: AbortController | null = null;
 
 /**
  * @description Creates the main desktop window and loads either dev server or built renderer assets.
@@ -91,10 +92,36 @@ app.whenReady().then(() => {
   ipcMain.handle(
     "takeout:process-folder",
     async (_event, request: ProcessRequest) => {
-      const summary = await processTakeoutFolder(request, sendProgress);
-      return summary;
+      if (activeRepairAbortController) {
+        throw new Error(
+          "A repair run is already active. Please wait or abort the current run.",
+        );
+      }
+
+      const abortController = new AbortController();
+      activeRepairAbortController = abortController;
+
+      try {
+        const summary = await processTakeoutFolder(
+          request,
+          sendProgress,
+          abortController.signal,
+        );
+        return summary;
+      } finally {
+        activeRepairAbortController = null;
+      }
     },
   );
+
+  ipcMain.handle("takeout:abort-process", async () => {
+    if (!activeRepairAbortController) {
+      return false;
+    }
+
+    activeRepairAbortController.abort();
+    return true;
+  });
 
   ipcMain.handle(
     "takeout:post-process",
