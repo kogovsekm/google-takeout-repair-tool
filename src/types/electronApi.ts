@@ -2,6 +2,7 @@ export type ProcessOptions = {
   writeMetadata: boolean;
   createYearMonthSubfolders: boolean;
   createYearSubfoldersOnly: boolean;
+  ignoreZeroCoordinates: boolean;
 };
 
 export type ProcessRequest = {
@@ -39,10 +40,20 @@ export type FileOutcomeTag =
   | "copied only"
   | "warning";
 
+export type SidecarMatchStrategy = "exact" | "fuzzy" | "title" | "none";
+
+export type SidecarMatchSummary = {
+  exact: number;
+  fuzzy: number;
+  title: number;
+  none: number;
+};
+
 export type FileOutcome = {
   filePath: string;
   tags: Array<FileOutcomeTag>;
   message: string | null;
+  sidecarMatchStrategy?: SidecarMatchStrategy;
 };
 
 export type ProcessReport = {
@@ -55,6 +66,7 @@ export type ProcessReport = {
   skippedMetadataFiles: Array<string>;
   problemFiles: Array<ProblemFile>;
   fileOutcomes: Array<FileOutcome>;
+  sidecarMatchSummary: SidecarMatchSummary;
   folderTree: Array<FolderTreeNode>;
 };
 
@@ -71,6 +83,7 @@ export type PostProcessOptions = {
   flattenMonthsToYears: boolean;
   flattenYearsToRoot: boolean;
   removeEmptyFolders: boolean;
+  createTempFolderForReview?: boolean;
 };
 
 export type PostProcessRequest = {
@@ -83,12 +96,23 @@ export type PostProcessReport = {
   movedFilesCount: number;
   removedFoldersCount: number;
   problemFiles: Array<ProblemFile>;
+  tempFolderPath?: string;
 };
 
 export type PostProcessSummary = {
   warnings: Array<string>;
   durationMs: number;
   report: PostProcessReport;
+};
+
+export type FinalizeTempOrganiseRequest = {
+  targetPath: string;
+  tempFolderPath: string;
+};
+
+export type FinalizeTempOrganiseResult = {
+  applied: boolean;
+  targetPath: string;
 };
 
 export type TakeoutApi = {
@@ -110,4 +134,14 @@ export type TakeoutApi = {
   onOrganiseProgress: (
     listener: (payload: ProgressUpdate) => void,
   ) => () => void;
+  finalizeTempOrganise: (
+    request: FinalizeTempOrganiseRequest,
+  ) => Promise<FinalizeTempOrganiseResult>;
+  validatePaths: (
+    inputPath: string,
+    outputPath: string,
+  ) => Promise<{
+    valid: boolean;
+    errors: Array<{ type: string; message: string }>;
+  }>;
 };

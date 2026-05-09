@@ -3,9 +3,12 @@ import path from "node:path";
 import { ExifTool } from "exiftool-vendored";
 
 import type {
+  FinalizeTempOrganiseResult,
   FileOutcome,
   FileOutcomeTag,
   FolderTreeNode,
+  PathValidationError,
+  PathValidationResult,
   ProblemFile,
   PostProcessRequest,
   PostProcessSummary,
@@ -13,6 +16,8 @@ import type {
   ProcessReport,
   ProcessSummary,
   ProgressUpdate,
+  SidecarMatchSummary,
+  SidecarMatchStrategy,
   SidecarMetadata,
 } from "./types.js";
 
@@ -20,8 +25,27 @@ type MetadataApplyResult = {
   mirroredMetadata: boolean;
 };
 
+type SidecarDirectoryEntry = {
+  filePath: string;
+  fileNameLower: string;
+  stemLower: string;
+};
+
+type SidecarLookup = {
+  byPath: Map<string, string>;
+  byDirectory: Map<string, Array<SidecarDirectoryEntry>>;
+  titleCache: Map<string, string | null>;
+};
+
+type SidecarMatchResult = {
+  sidecarPath: string | null;
+  strategy: SidecarMatchStrategy;
+};
+
 const EXIFTOOL_METADATA_TIMEOUT_MS = 45000;
 const EXIFTOOL_MOV_RESTORE_TIMEOUT_MS = 20000;
+const MIN_FUZZY_SIDECAR_SCORE = 300;
+const MIN_TITLE_SIDECAR_SCORE = 360;
 const PROCESS_ABORTED_MESSAGE = "Processing aborted by user.";
 
 type ExifToolClient = InstanceType<typeof ExifTool>;
@@ -45,6 +69,23 @@ const mediaExtensions = new Set([
   ".avi",
   ".mkv",
   ".3gp",
+]);
+
+const ignoredOutputMetadataEntries = new Set([
+  ".DS_Store",
+  ".directory",
+  ".fseventsd",
+  ".Spotlight-V100",
+  ".TemporaryItems",
+  ".Trash",
+  ".Trash-1000",
+  ".Trashes",
+  ".apdisk",
+  "$RECYCLE.BIN",
+  "desktop.ini",
+  "ehthumbs.db",
+  "System Volume Information",
+  "Thumbs.db",
 ]);
 
 /**
@@ -111,6 +152,111 @@ const fileExists = async (targetPath: string): Promise<boolean> => {
   }
 };
 
+const isIgnorableOutputEntry = (entryName: string): boolean => {
+  if (ignoredOutputMetadataEntries.has(entryName)) {
+    return true;
+  }
+
+  return entryName.startsWith("._") || entryName.startsWith(".nfs");
+};
+
+/**
+ * @description Validates that input and output paths do not overlap or nest within each other.
+ * @param inputPath Repair input path.
+ * @param outputPath Repair output path.
+ * @param checkNonEmpty Whether to check if output folder is non-empty.
+ * @returns Validation result with errors if paths are unsafe.
+ */
+const validateProcessPaths = async (
+  inputPath: string,
+  outputPath: string,
+  checkNonEmpty: boolean = true,
+): Promise<PathValidationResult> => {
+  const errors: Array<PathValidationError> = [];
+
+  try {
+    // Try to resolve to real paths, but if input doesn't exist, skip path comparison checks
+    // (the actual directory existence check happens in processTakeoutFolder)
+    const inputExists = await fileExists(inputPath);
+    const outputExists = await fileExists(outputPath);
+
+    if (!inputExists) {
+      // Input doesn't exist - skip overlap checks, let processTakeoutFolder handle this error
+      return { valid: true, errors: [] };
+    }
+
+    const realInputPath = await fs.realpath(inputPath);
+    const realOutputPath = outputExists
+      ? await fs.realpath(outputPath)
+      : outputPath;
+
+    // Check if paths are identical
+    if (realInputPath === realOutputPath) {
+      errors.push({
+        type: "overlap",
+        message: "Input and output folders cannot be the same directory.",
+        inputPath: realInputPath,
+        outputPath: realOutputPath,
+      });
+    }
+
+    // Check if output is nested under input
+    if (
+      realOutputPath.startsWith(realInputPath + path.sep) ||
+      realOutputPath === realInputPath
+    ) {
+      errors.push({
+        type: "nested",
+        message:
+          "Output folder cannot be located inside the input folder. This would cause duplicates and re-processing.",
+        inputPath: realInputPath,
+        outputPath: realOutputPath,
+        overlappingPath: realInputPath,
+      });
+    }
+
+    // Check if input is nested under output
+    if (realInputPath.startsWith(realOutputPath + path.sep)) {
+      errors.push({
+        type: "nested",
+        message:
+          "Input folder cannot be located inside the output folder. Please choose separate directory hierarchies.",
+        inputPath: realInputPath,
+        outputPath: realOutputPath,
+        overlappingPath: realOutputPath,
+      });
+    }
+
+    // Check if output folder exists and is non-empty
+    if (checkNonEmpty && outputExists) {
+      const entries = await fs.readdir(realOutputPath);
+      const meaningfulEntries = entries.filter((entry) => {
+        return !isIgnorableOutputEntry(entry);
+      });
+      if (meaningfulEntries.length > 0) {
+        errors.push({
+          type: "nonEmpty",
+          message:
+            "Output folder is not empty. Files will receive a unique collision suffix to avoid overwriting existing content.",
+          outputPath: realOutputPath,
+        });
+      }
+    }
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : "Unknown validation error";
+    errors.push({
+      type: "invalid",
+      message: `Path validation failed: ${message}`,
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+};
+
 /**
  * @description Resolves a non-conflicting output path by appending a random suffix when needed.
  * @param initialPath Preferred output path.
@@ -155,20 +301,130 @@ const readJsonIfExists = async (
   }
 };
 
+const stripJsonExtension = (fileName: string): string => {
+  return fileName.replace(/\.json$/i, "");
+};
+
+const stripDuplicateSuffix = (value: string): string => {
+  return value.replace(/\(\d+\)$/i, "").trim();
+};
+
+const normalizeSidecarStem = (fileName: string): string => {
+  return stripDuplicateSuffix(stripJsonExtension(fileName).toLowerCase());
+};
+
+const deriveCandidateMediaName = (sidecarStem: string): string => {
+  const supplementalMarkerIndex = sidecarStem.indexOf(".supp");
+  if (supplementalMarkerIndex > 0) {
+    return sidecarStem.slice(0, supplementalMarkerIndex);
+  }
+
+  return sidecarStem;
+};
+
+const scoreSidecarCandidate = (
+  mediaNameLower: string,
+  mediaBaseLower: string,
+  sidecarEntry: SidecarDirectoryEntry,
+): number => {
+  const candidateMediaName = deriveCandidateMediaName(sidecarEntry.stemLower);
+
+  if (candidateMediaName === mediaNameLower) {
+    return 500;
+  }
+
+  if (candidateMediaName === mediaBaseLower) {
+    return 450;
+  }
+
+  if (sidecarEntry.stemLower === mediaNameLower) {
+    return 420;
+  }
+
+  if (sidecarEntry.stemLower === mediaBaseLower) {
+    return 380;
+  }
+
+  if (sidecarEntry.stemLower.includes(mediaNameLower)) {
+    return 320;
+  }
+
+  if (sidecarEntry.stemLower.includes(mediaBaseLower)) {
+    return 260;
+  }
+
+  if (mediaNameLower.startsWith(candidateMediaName)) {
+    return 230;
+  }
+
+  if (mediaBaseLower.startsWith(candidateMediaName)) {
+    return 200;
+  }
+
+  return 0;
+};
+
+const scoreTitleCandidate = (
+  mediaNameLower: string,
+  mediaBaseLower: string,
+  titleLower: string,
+): number => {
+  if (titleLower === mediaNameLower) {
+    return 520;
+  }
+
+  if (titleLower === mediaBaseLower) {
+    return 470;
+  }
+
+  if (titleLower.includes(mediaNameLower)) {
+    return 390;
+  }
+
+  if (titleLower.includes(mediaBaseLower)) {
+    return 360;
+  }
+
+  return 0;
+};
+
+const readSidecarTitle = async (
+  sidecarPath: string,
+  titleCache: Map<string, string | null>,
+): Promise<string | null> => {
+  const cached = titleCache.get(sidecarPath);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const data = await readJsonIfExists(sidecarPath);
+  if (!data) {
+    titleCache.set(sidecarPath, null);
+    return null;
+  }
+
+  const title =
+    typeof data.title === "string" ? data.title.toLowerCase() : null;
+  titleCache.set(sidecarPath, title);
+  return title;
+};
+
 /**
  * @description Attempts to locate a Google Takeout sidecar JSON for a media file.
  * @param mediaPath Media file path.
- * @param sidecarIndex Indexed JSON files.
+ * @param sidecarLookup Indexed JSON files and matching caches.
  * @returns Matching sidecar path or null.
  */
 const findSidecarPath = async (
   mediaPath: string,
-  sidecarIndex: Map<string, string>,
-): Promise<string | null> => {
+  sidecarLookup: SidecarLookup,
+): Promise<SidecarMatchResult> => {
   const dirPath = path.dirname(mediaPath);
   const fileName = path.basename(mediaPath);
   const extension = path.extname(fileName);
   const baseName = path.basename(fileName, extension);
+  const fileNameLower = fileName.toLowerCase();
+  const baseNameLower = baseName.toLowerCase();
 
   const candidates = [
     `${fileName}.json`,
@@ -179,13 +435,78 @@ const findSidecarPath = async (
 
   for (const candidate of candidates) {
     const absoluteCandidate = path.join(dirPath, candidate).toLowerCase();
-    const resolved = sidecarIndex.get(absoluteCandidate);
+    const resolved = sidecarLookup.byPath.get(absoluteCandidate);
     if (resolved) {
-      return resolved;
+      return {
+        sidecarPath: resolved,
+        strategy: "exact",
+      };
     }
   }
 
-  return null;
+  const jsonFilesInDirectory = sidecarLookup.byDirectory.get(
+    dirPath.toLowerCase(),
+  );
+  if (!jsonFilesInDirectory || jsonFilesInDirectory.length === 0) {
+    return {
+      sidecarPath: null,
+      strategy: "none",
+    };
+  }
+
+  let bestScore = 0;
+  let bestMatch: string | null = null;
+
+  for (const sidecarEntry of jsonFilesInDirectory) {
+    const score = scoreSidecarCandidate(
+      fileNameLower,
+      baseNameLower,
+      sidecarEntry,
+    );
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = sidecarEntry.filePath;
+    }
+  }
+
+  if (bestMatch && bestScore >= MIN_FUZZY_SIDECAR_SCORE) {
+    return {
+      sidecarPath: bestMatch,
+      strategy: "fuzzy",
+    };
+  }
+
+  let bestTitleScore = 0;
+  let bestTitleMatch: string | null = null;
+
+  for (const sidecarEntry of jsonFilesInDirectory) {
+    const title = await readSidecarTitle(
+      sidecarEntry.filePath,
+      sidecarLookup.titleCache,
+    );
+    if (!title) {
+      continue;
+    }
+
+    const score = scoreTitleCandidate(fileNameLower, baseNameLower, title);
+    if (score > bestTitleScore) {
+      bestTitleScore = score;
+      bestTitleMatch = sidecarEntry.filePath;
+    }
+  }
+
+  if (bestTitleMatch && bestTitleScore >= MIN_TITLE_SIDECAR_SCORE) {
+    return {
+      sidecarPath: bestTitleMatch,
+      strategy: "title",
+    };
+  }
+
+  return {
+    sidecarPath: null,
+    strategy: "none",
+  };
 };
 
 /**
@@ -251,6 +572,7 @@ const parseGeoValue = (
  */
 const parseSidecarMetadata = async (
   sidecarPath: string,
+  ignoreZeroCoordinates: boolean,
 ): Promise<SidecarMetadata | null> => {
   const data = await readJsonIfExists(sidecarPath);
   if (!data) {
@@ -260,9 +582,15 @@ const parseSidecarMetadata = async (
   const title = typeof data.title === "string" ? data.title : null;
   const description =
     typeof data.description === "string" ? data.description : null;
-  const latitude = parseGeoValue(data, "latitude");
-  const longitude = parseGeoValue(data, "longitude");
-  const altitude = parseGeoValue(data, "altitude");
+  let latitude = parseGeoValue(data, "latitude");
+  let longitude = parseGeoValue(data, "longitude");
+  let altitude = parseGeoValue(data, "altitude");
+
+  if (ignoreZeroCoordinates && latitude === 0 && longitude === 0) {
+    latitude = null;
+    longitude = null;
+    altitude = null;
+  }
 
   return {
     title,
@@ -472,20 +800,36 @@ const resolveYearTargetDir = async (
 };
 
 /**
- * @description Builds a case-insensitive lookup map for JSON sidecars.
+ * @description Builds sidecar lookup structures for exact path, directory-level matching, and cached title checks.
  * @param allFiles All discovered files.
- * @returns Map keyed by lowercased absolute path.
+ * @returns Lookup data for sidecar resolution.
  */
-const buildSidecarIndex = (allFiles: Array<string>): Map<string, string> => {
-  const index = new Map<string, string>();
+const buildSidecarLookup = (allFiles: Array<string>): SidecarLookup => {
+  const byPath = new Map<string, string>();
+  const byDirectory = new Map<string, Array<SidecarDirectoryEntry>>();
+  const titleCache = new Map<string, string | null>();
 
   for (const currentFile of allFiles) {
     if (path.extname(currentFile).toLowerCase() === ".json") {
-      index.set(currentFile.toLowerCase(), currentFile);
+      const lowerPath = currentFile.toLowerCase();
+      byPath.set(lowerPath, currentFile);
+
+      const directoryLower = path.dirname(currentFile).toLowerCase();
+      const currentDirEntries = byDirectory.get(directoryLower) ?? [];
+      currentDirEntries.push({
+        filePath: currentFile,
+        fileNameLower: path.basename(currentFile).toLowerCase(),
+        stemLower: normalizeSidecarStem(path.basename(currentFile)),
+      });
+      byDirectory.set(directoryLower, currentDirEntries);
     }
   }
 
-  return index;
+  return {
+    byPath,
+    byDirectory,
+    titleCache,
+  };
 };
 
 /**
@@ -630,6 +974,7 @@ const createProcessReport = async (
   skippedMetadataFiles: Array<string>,
   problemFiles: Array<ProblemFile>,
   fileOutcomes: Array<FileOutcome>,
+  sidecarMatchSummary: SidecarMatchSummary,
 ): Promise<ProcessReport> => {
   const folderTree = await buildFolderTree(outputPath);
 
@@ -643,6 +988,7 @@ const createProcessReport = async (
     skippedMetadataFiles,
     problemFiles,
     fileOutcomes,
+    sidecarMatchSummary,
     folderTree,
   };
 };
@@ -684,6 +1030,23 @@ export const processTakeoutFolder = async (
 
   throwIfAborted(abortSignal);
 
+  // Validate path safety before proceeding
+  const pathValidation = await validateProcessPaths(inputPath, outputPath);
+  if (!pathValidation.valid) {
+    const criticalErrors = pathValidation.errors.filter(
+      (e) => e.type !== "nonEmpty",
+    );
+    if (criticalErrors.length > 0) {
+      throw new Error(criticalErrors.map((e) => e.message).join(" "));
+    }
+    // Non-empty warning is logged but doesn't fail
+    for (const error of pathValidation.errors) {
+      if (error.type === "nonEmpty") {
+        // This will be shown as warning in renderer
+      }
+    }
+  }
+
   const inputStats = await fs.stat(inputPath).catch(() => null);
 
   if (!inputStats || !inputStats.isDirectory()) {
@@ -712,7 +1075,7 @@ export const processTakeoutFolder = async (
     );
   }
 
-  const sidecarIndex = buildSidecarIndex(allFiles);
+  const sidecarLookup = buildSidecarLookup(allFiles);
   const warnings: Array<string> = [];
   const metadataMergedFiles: Array<string> = [];
   const metadataMirroredFiles: Array<string> = [];
@@ -721,17 +1084,31 @@ export const processTakeoutFolder = async (
   const skippedMetadataFiles: Array<string> = [];
   const problemFiles: Array<ProblemFile> = [];
   const fileOutcomes: Array<FileOutcome> = [];
+  const sidecarMatchSummary: SidecarMatchSummary = {
+    exact: 0,
+    fuzzy: 0,
+    title: 0,
+    none: 0,
+  };
 
   let processed = 0;
 
   try {
     for (const mediaFile of mediaFiles) {
       throwIfAborted(abortSignal);
-      const sidecarPath = await findSidecarPath(mediaFile, sidecarIndex);
+      const sidecarMatchResult = await findSidecarPath(
+        mediaFile,
+        sidecarLookup,
+      );
+      const sidecarPath = sidecarMatchResult.sidecarPath;
+      sidecarMatchSummary[sidecarMatchResult.strategy] += 1;
       let sidecarMetadata: SidecarMetadata | null = null;
 
       if (sidecarPath) {
-        sidecarMetadata = await parseSidecarMetadata(sidecarPath);
+        sidecarMetadata = await parseSidecarMetadata(
+          sidecarPath,
+          request.options.ignoreZeroCoordinates,
+        );
       }
 
       const relativePath = path.relative(inputPath, mediaFile);
@@ -879,6 +1256,7 @@ export const processTakeoutFolder = async (
           filePath: currentMediaPath,
           tags: outcomeTags,
           message: outcomeMessage,
+          sidecarMatchStrategy: sidecarMatchResult.strategy,
         });
 
         processed += 1;
@@ -905,6 +1283,7 @@ export const processTakeoutFolder = async (
           filePath: currentMediaPath,
           tags: outcomeTags.length > 0 ? outcomeTags : ["warning"],
           message: outcomeMessage,
+          sidecarMatchStrategy: sidecarMatchResult.strategy,
         });
         problemFiles.push({
           filePath: currentMediaPath,
@@ -923,7 +1302,7 @@ export const processTakeoutFolder = async (
 
     throwIfAborted(abortSignal);
 
-    const jsonFiles = Array.from(sidecarIndex.values());
+    const jsonFiles = Array.from(sidecarLookup.byPath.values());
     const jsonRemoved = jsonFiles.length;
     const report = await createProcessReport(
       processed,
@@ -935,6 +1314,7 @@ export const processTakeoutFolder = async (
       skippedMetadataFiles,
       problemFiles,
       fileOutcomes,
+      sidecarMatchSummary,
     );
 
     return {
@@ -952,7 +1332,7 @@ export const processTakeoutFolder = async (
   }
 };
 
-export { PROCESS_ABORTED_MESSAGE };
+export { PROCESS_ABORTED_MESSAGE, validateProcessPaths };
 
 /**
  * @description Returns true when a folder name looks like a 4-digit year.
@@ -1000,43 +1380,186 @@ const removeEmptyDirsRecursively = async (dirPath: string): Promise<number> => {
 };
 
 /**
- * @description Reorganises a previously-output folder by flattening YYYY/MM or YYYY structures.
- * @param request Post-process request payload.
- * @param onProgress Progress callback for UI updates.
- * @returns Post-process summary with counts, warnings, and duration.
+ * @description Creates a temporary folder with a unique name within a parent directory.
+ * @param parentPath Parent directory where temp folder will be created.
+ * @returns Path to newly created temporary folder.
  */
-export const postProcessFolder = async (
-  request: PostProcessRequest,
+const createTempFolder = async (parentPath: string): Promise<string> => {
+  const tempFolderName = `-temp-${Math.random().toString(36).substring(2, 8)}`;
+  const tempPath = path.join(parentPath, tempFolderName);
+  await fs.mkdir(tempPath, { recursive: true });
+  return tempPath;
+};
+
+const isPathInside = (childPath: string, parentPath: string): boolean => {
+  return childPath.startsWith(parentPath + path.sep);
+};
+
+const copyDirectoryEntry = async (
+  sourcePath: string,
+  destinationPath: string,
+): Promise<void> => {
+  const sourceStats = await fs.stat(sourcePath);
+  if (sourceStats.isDirectory()) {
+    await fs.cp(sourcePath, destinationPath, { recursive: true });
+    return;
+  }
+
+  await fs.copyFile(sourcePath, destinationPath);
+};
+
+export const finalizeTempOrganise = async (
+  targetPath: string,
+  tempFolderPath: string,
+): Promise<FinalizeTempOrganiseResult> => {
+  const realTargetPath = await fs.realpath(targetPath).catch(() => null);
+  const realTempPath = await fs.realpath(tempFolderPath).catch(() => null);
+
+  if (!realTargetPath) {
+    throw new Error("Target folder no longer exists.");
+  }
+
+  if (!realTempPath) {
+    throw new Error("Temporary review folder no longer exists.");
+  }
+
+  if (!isPathInside(realTempPath, realTargetPath)) {
+    throw new Error(
+      "Temporary review folder is invalid. It must be inside the selected folder.",
+    );
+  }
+
+  const backupPath = await resolveCollisionPath(
+    path.join(
+      path.dirname(realTargetPath),
+      `${path.basename(realTargetPath)}-backup`,
+    ),
+  );
+
+  const tempFolderName = path.basename(realTempPath);
+
+  try {
+    await fs.mkdir(backupPath, { recursive: true });
+
+    const originalEntries = await fs.readdir(realTargetPath, {
+      withFileTypes: true,
+    });
+
+    for (const entry of originalEntries) {
+      if (entry.name === tempFolderName) {
+        continue;
+      }
+
+      const sourcePath = path.join(realTargetPath, entry.name);
+      const backupEntryPath = path.join(backupPath, entry.name);
+      await copyDirectoryEntry(sourcePath, backupEntryPath);
+    }
+
+    for (const entry of originalEntries) {
+      if (entry.name === tempFolderName) {
+        continue;
+      }
+
+      await fs.rm(path.join(realTargetPath, entry.name), {
+        recursive: true,
+        force: true,
+      });
+    }
+
+    const reviewedEntries = await fs.readdir(realTempPath, {
+      withFileTypes: true,
+    });
+    for (const entry of reviewedEntries) {
+      const sourcePath = path.join(realTempPath, entry.name);
+      const destinationPath = path.join(realTargetPath, entry.name);
+      await fs.rename(sourcePath, destinationPath);
+    }
+
+    await fs.rm(realTempPath, { recursive: true, force: true });
+    await fs.rm(backupPath, { recursive: true, force: true });
+
+    return {
+      applied: true,
+      targetPath: realTargetPath,
+    };
+  } catch (error: unknown) {
+    try {
+      const currentEntries = await fs.readdir(realTargetPath, {
+        withFileTypes: true,
+      });
+      for (const entry of currentEntries) {
+        if (entry.name === tempFolderName) {
+          continue;
+        }
+
+        await fs.rm(path.join(realTargetPath, entry.name), {
+          recursive: true,
+          force: true,
+        });
+      }
+
+      const backupEntries = await fs.readdir(backupPath, {
+        withFileTypes: true,
+      });
+      for (const entry of backupEntries) {
+        const sourcePath = path.join(backupPath, entry.name);
+        const destinationPath = path.join(realTargetPath, entry.name);
+        await fs.rename(sourcePath, destinationPath);
+      }
+
+      await fs.rm(backupPath, { recursive: true, force: true });
+    } catch {
+      // Best-effort rollback only.
+    }
+
+    throw new Error(
+      `Failed to apply reviewed organisation result: ${normalizeError(error)}`,
+      { cause: error },
+    );
+  }
+};
+
+/**
+ * @description Core organisation logic that operates on a target path.
+ * @param targetPath Path to reorganise.
+ * @param options Organisation options.
+ * @param onProgress Progress callback.
+ * @returns Object with counts and warnings.
+ */
+const performOrganisation = async (
+  targetPath: string,
+  options: {
+    flattenMonthsToYears: boolean;
+    flattenYearsToRoot: boolean;
+    removeEmptyFolders: boolean;
+  },
   onProgress: (update: ProgressUpdate) => void,
-): Promise<PostProcessSummary> => {
-  const startedAt = Date.now();
+): Promise<{
+  movedFilesCount: number;
+  removedFoldersCount: number;
+  warnings: Array<string>;
+  problemFiles: Array<ProblemFile>;
+}> => {
   const warnings: Array<string> = [];
   const problemFiles: Array<ProblemFile> = [];
   let movedFilesCount = 0;
   let removedFoldersCount = 0;
 
-  const targetStats = await fs.stat(request.targetPath).catch(() => null);
-  if (!targetStats || !targetStats.isDirectory()) {
-    throw new Error(
-      "Incorrect folder selected. Please choose a valid directory.",
-    );
-  }
-
   const { flattenMonthsToYears, flattenYearsToRoot, removeEmptyFolders } =
-    request.options;
+    options;
 
   // Count expected moves for accurate progress reporting.
   let totalMoves = 0;
 
   if (flattenMonthsToYears) {
-    const rootEntries = await fs.readdir(request.targetPath, {
+    const rootEntries = await fs.readdir(targetPath, {
       withFileTypes: true,
     });
     for (const yearEntry of rootEntries) {
       if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
         continue;
       }
-      const yearPath = path.join(request.targetPath, yearEntry.name);
+      const yearPath = path.join(targetPath, yearEntry.name);
       const monthEntries = await fs.readdir(yearPath, { withFileTypes: true });
       for (const monthEntry of monthEntries) {
         if (!monthEntry.isDirectory() || !isMonthFolder(monthEntry.name)) {
@@ -1050,14 +1573,14 @@ export const postProcessFolder = async (
   }
 
   if (flattenYearsToRoot) {
-    const rootEntries = await fs.readdir(request.targetPath, {
+    const rootEntries = await fs.readdir(targetPath, {
       withFileTypes: true,
     });
     for (const yearEntry of rootEntries) {
       if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
         continue;
       }
-      const yearPath = path.join(request.targetPath, yearEntry.name);
+      const yearPath = path.join(targetPath, yearEntry.name);
       const yearFiles = await collectFilesRecursively(yearPath);
       totalMoves += yearFiles.length;
     }
@@ -1082,14 +1605,14 @@ export const postProcessFolder = async (
 
   // Step 1 – flatten months into their parent year folder.
   if (flattenMonthsToYears) {
-    const rootEntries = await fs.readdir(request.targetPath, {
+    const rootEntries = await fs.readdir(targetPath, {
       withFileTypes: true,
     });
     for (const yearEntry of rootEntries) {
       if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
         continue;
       }
-      const yearPath = path.join(request.targetPath, yearEntry.name);
+      const yearPath = path.join(targetPath, yearEntry.name);
       const monthEntries = await fs.readdir(yearPath, { withFileTypes: true });
       for (const monthEntry of monthEntries) {
         if (!monthEntry.isDirectory() || !isMonthFolder(monthEntry.name)) {
@@ -1133,14 +1656,14 @@ export const postProcessFolder = async (
 
   // Step 2 – flatten year folders into the target root.
   if (flattenYearsToRoot) {
-    const rootEntries = await fs.readdir(request.targetPath, {
+    const rootEntries = await fs.readdir(targetPath, {
       withFileTypes: true,
     });
     for (const yearEntry of rootEntries) {
       if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
         continue;
       }
-      const yearPath = path.join(request.targetPath, yearEntry.name);
+      const yearPath = path.join(targetPath, yearEntry.name);
       const yearFiles = await collectFilesRecursively(yearPath);
       for (const filePath of yearFiles) {
         const fileName = path.basename(filePath);
@@ -1152,7 +1675,7 @@ export const postProcessFolder = async (
           message: `Moving ${fileName} → root`,
         });
         try {
-          await moveFile(filePath, request.targetPath);
+          await moveFile(filePath, targetPath);
           processed += 1;
         } catch (moveError: unknown) {
           const message = `Failed to move ${fileName}: ${normalizeError(moveError)}`;
@@ -1177,7 +1700,7 @@ export const postProcessFolder = async (
 
   // Step 3 – sweep for any remaining empty directories.
   if (removeEmptyFolders) {
-    removedFoldersCount += await removeEmptyDirsRecursively(request.targetPath);
+    removedFoldersCount += await removeEmptyDirsRecursively(targetPath);
   }
 
   onProgress({
@@ -1189,13 +1712,86 @@ export const postProcessFolder = async (
   });
 
   return {
+    movedFilesCount,
+    removedFoldersCount,
     warnings,
-    durationMs: Date.now() - startedAt,
-    report: {
-      targetPath: request.targetPath,
-      movedFilesCount,
-      removedFoldersCount,
-      problemFiles,
-    },
+    problemFiles,
   };
+};
+
+/**
+ * @description Reorganises a previously-output folder by flattening YYYY/MM or YYYY structures.
+ * @param request Post-process request payload.
+ * @param onProgress Progress callback for UI updates.
+ * @returns Post-process summary with counts, warnings, and duration.
+ */
+export const postProcessFolder = async (
+  request: PostProcessRequest,
+  onProgress: (update: ProgressUpdate) => void,
+): Promise<PostProcessSummary> => {
+  const startedAt = Date.now();
+
+  const targetStats = await fs.stat(request.targetPath).catch(() => null);
+  if (!targetStats || !targetStats.isDirectory()) {
+    throw new Error(
+      "Incorrect folder selected. Please choose a valid directory.",
+    );
+  }
+
+  const useTemp = request.options.createTempFolderForReview ?? false;
+  const workPath = useTemp
+    ? await createTempFolder(request.targetPath)
+    : request.targetPath;
+  const workFolderName = path.basename(workPath);
+
+  try {
+    // Copy contents to temp folder if using temp mode
+    if (useTemp && workPath !== request.targetPath) {
+      // Copy structure and files to temp folder
+      const entries = await fs.readdir(request.targetPath, {
+        withFileTypes: true,
+      });
+      for (const entry of entries) {
+        if (entry.name === workFolderName) {
+          continue;
+        }
+
+        const source = path.join(request.targetPath, entry.name);
+        const destination = path.join(workPath, entry.name);
+        if (entry.isDirectory()) {
+          await fs.cp(source, destination, { recursive: true });
+        } else {
+          await fs.copyFile(source, destination);
+        }
+      }
+    }
+
+    const result = await performOrganisation(
+      workPath,
+      request.options,
+      onProgress,
+    );
+
+    return {
+      warnings: result.warnings,
+      durationMs: Date.now() - startedAt,
+      report: {
+        targetPath: request.targetPath,
+        movedFilesCount: result.movedFilesCount,
+        removedFoldersCount: result.removedFoldersCount,
+        problemFiles: result.problemFiles,
+        ...(useTemp ? { tempFolderPath: workPath } : {}),
+      },
+    };
+  } catch (error: unknown) {
+    // Clean up temp folder if operation fails
+    if (useTemp && workPath !== request.targetPath) {
+      try {
+        await fs.rm(workPath, { recursive: true });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    throw error;
+  }
 };

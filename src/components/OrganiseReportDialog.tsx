@@ -5,6 +5,8 @@ type OrganiseReportDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   summary: PostProcessSummary;
+  onApplyTempReview?: () => Promise<void>;
+  isApplyingTempReview?: boolean;
   theme?: "dark" | "light";
 };
 
@@ -47,13 +49,23 @@ const OrganiseReportDialog = ({
   open,
   onOpenChange,
   summary,
+  onApplyTempReview,
+  isApplyingTempReview = false,
   theme = "dark",
 }: OrganiseReportDialogProps) => {
   const isLightTheme = theme === "light";
   const report = summary.report;
+  const hasTempReview = typeof report.tempFolderPath === "string";
 
   const handleOpenFolder = async (): Promise<void> => {
-    await window.takeoutApi.openFolder(report.targetPath);
+    const folderToOpen = hasTempReview
+      ? report.tempFolderPath
+      : report.targetPath;
+    if (!folderToOpen) {
+      return;
+    }
+
+    await window.takeoutApi.openFolder(folderToOpen);
   };
 
   return (
@@ -64,15 +76,32 @@ const OrganiseReportDialog = ({
         theme={theme}
       >
         <div className="mb-5">
-          <button
-            type="button"
-            onClick={() => {
-              void handleOpenFolder();
-            }}
-            className={`rounded-2xl border px-4 py-3 font-display text-base font-semibold transition ${isLightTheme ? "border-[#5f8dbf]/25 bg-[#f1f6ff] text-[#325077] hover:border-[#4e79a8]/55 hover:bg-[#e8f0ff]" : "border-cyan-300/20 bg-slate-900/70 text-cyan-50 hover:border-cyan-300/70 hover:bg-slate-800/80"}`}
-          >
-            Open organised folder
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                void handleOpenFolder();
+              }}
+              className={`rounded-2xl border px-4 py-3 font-display text-base font-semibold transition ${isLightTheme ? "border-[#5f8dbf]/25 bg-[#f1f6ff] text-[#325077] hover:border-[#4e79a8]/55 hover:bg-[#e8f0ff]" : "border-cyan-300/20 bg-slate-900/70 text-cyan-50 hover:border-cyan-300/70 hover:bg-slate-800/80"}`}
+            >
+              {hasTempReview ? "Open review folder" : "Open organised folder"}
+            </button>
+
+            {hasTempReview && onApplyTempReview ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void onApplyTempReview();
+                }}
+                disabled={isApplyingTempReview}
+                className={`rounded-2xl border px-4 py-3 font-display text-base font-semibold transition disabled:cursor-not-allowed disabled:opacity-65 ${isLightTheme ? "border-[#7c79cf]/35 bg-[#eceeff] text-[#554f99] hover:border-[#6c68bd]/65 hover:bg-[#e2e6ff]" : "border-[#c678dd]/35 bg-[#c678dd]/10 text-[#ead8ff] hover:border-[#c678dd]/70 hover:bg-[#c678dd]/20"}`}
+              >
+                {isApplyingTempReview
+                  ? "Applying reviewed result…"
+                  : "Apply reviewed result"}
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
