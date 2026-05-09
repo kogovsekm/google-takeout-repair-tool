@@ -308,6 +308,14 @@ const FileOutcomeList = ({ items, theme }: FileOutcomeListProps) => {
                   </span>
                 );
               })}
+              {item.sidecarMatchStrategy &&
+              item.sidecarMatchStrategy !== "none" ? (
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${isLightTheme ? "border-[#5f8dbf]/30 bg-[#dbe9ff] text-[#325077]" : "border-cyan-300/20 bg-cyan-500/10 text-cyan-200"}`}
+                >
+                  {`sidecar: ${item.sidecarMatchStrategy}`}
+                </span>
+              ) : null}
             </div>
             {item.message ? (
               <p
@@ -426,6 +434,26 @@ const ProcessReportDialog = ({
           <StatCard
             label="Problem files"
             value={report.problemFiles.length}
+            theme={theme}
+          />
+          <StatCard
+            label="Sidecar exact match"
+            value={report.sidecarMatchSummary.exact}
+            theme={theme}
+          />
+          <StatCard
+            label="Sidecar fuzzy match"
+            value={report.sidecarMatchSummary.fuzzy}
+            theme={theme}
+          />
+          <StatCard
+            label="Sidecar title match"
+            value={report.sidecarMatchSummary.title}
+            theme={theme}
+          />
+          <StatCard
+            label="No sidecar matched"
+            value={report.sidecarMatchSummary.none}
             theme={theme}
           />
         </div>

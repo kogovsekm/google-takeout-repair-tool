@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   CircleAlert,
   FileText,
@@ -44,6 +45,14 @@ type LogVisual = {
 type ThemeMode = "dark" | "light";
 type TabId = "repair" | "organise";
 type Toast = { id: string; message: string };
+
+type ConfirmationDialogState = {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+};
 
 const THEME_STORAGE_KEY = "takeout-repair-theme";
 const PROCESS_ABORTED_MESSAGE = "Processing aborted by user.";
@@ -169,9 +178,11 @@ const App = () => {
   const desktopApi =
     typeof window !== "undefined" ? window.takeoutApi : undefined;
   const hasDesktopApi =
+    typeof desktopApi?.validatePaths === "function" &&
     typeof desktopApi?.onProgress === "function" &&
     typeof desktopApi.selectFolder === "function" &&
     typeof desktopApi.processFolder === "function" &&
+    typeof desktopApi.finalizeTempOrganise === "function" &&
     typeof desktopApi.abortProcess === "function" &&
     typeof desktopApi.openFolder === "function" &&
     typeof desktopApi.saveReport === "function";
@@ -207,13 +218,22 @@ const App = () => {
     writeMetadata: true,
     createYearMonthSubfolders: true,
     createYearSubfoldersOnly: false,
+    ignoreZeroCoordinates: true,
   });
+  const [pathWarnings, setPathWarnings] = useState<
+    Array<{ type: string; message: string }>
+  >([]);
   const logsContainerRef = useRef<HTMLDivElement | null>(null);
 
   // ── Tab + cross-tab locking ────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<TabId>("repair");
   const [activeJob, setActiveJob] = useState<TabId | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [confirmationDialog, setConfirmationDialog] =
+    useState<ConfirmationDialogState | null>(null);
+  const confirmationResolverRef = useRef<((confirmed: boolean) => void) | null>(
+    null,
+  );
 
   // ── Organise tab state ─────────────────────────────────────────────────────
   const [orgSelectedFolder, setOrgSelectedFolder] = useState<string | null>(
@@ -222,6 +242,7 @@ const App = () => {
   const [orgLastFolder, setOrgLastFolder] = useState<string | null>(null);
   const [orgCompletedSummary, setOrgCompletedSummary] =
     useState<PostProcessSummary | null>(null);
+  const [isApplyingOrgTempReview, setIsApplyingOrgTempReview] = useState(false);
   const [orgIsReportOpen, setOrgIsReportOpen] = useState(false);
   const [orgStatusText, setOrgStatusText] = useState(
     "Select a folder to organise",
@@ -239,6 +260,7 @@ const App = () => {
     flattenMonthsToYears: true,
     flattenYearsToRoot: false,
     removeEmptyFolders: true,
+    createTempFolderForReview: false,
   });
   const orgLogsContainerRef = useRef<HTMLDivElement | null>(null);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -425,6 +447,30 @@ const App = () => {
     );
   }, [activeJob, orgCompletedSummary, orgSelectedFolder]);
 
+  // Validate repair tab paths for safety warnings.
+  useEffect(() => {
+    if (!hasDesktopApi || !selectedInputFolder || !selectedOutputFolder) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPathWarnings([]);
+      return;
+    }
+
+    const validatePaths = async (): Promise<void> => {
+      try {
+        const result = await desktopApi.validatePaths(
+          selectedInputFolder,
+          selectedOutputFolder,
+        );
+        setPathWarnings(result.errors);
+      } catch {
+        // Silently ignore validation errors
+        setPathWarnings([]);
+      }
+    };
+
+    void validatePaths();
+  }, [desktopApi, hasDesktopApi, selectedInputFolder, selectedOutputFolder]);
+
   /**
    * @description Shows a temporary dismissing toast notification.
    * @param message Message to display.
@@ -436,6 +482,57 @@ const App = () => {
     setTimeout(() => {
       setToast((current) => (current?.id === id ? null : current));
     }, 4000);
+  };
+
+  const requestConfirmation = async (
+    params: Omit<ConfirmationDialogState, "open">,
+  ): Promise<boolean> => {
+    return await new Promise<boolean>((resolve) => {
+      confirmationResolverRef.current = resolve;
+      setConfirmationDialog({
+        open: true,
+        title: params.title,
+        message: params.message,
+        confirmLabel: params.confirmLabel,
+        cancelLabel: params.cancelLabel,
+      });
+    });
+  };
+
+  const resolveConfirmation = (confirmed: boolean): void => {
+    const resolver = confirmationResolverRef.current;
+    confirmationResolverRef.current = null;
+    setConfirmationDialog(null);
+    if (resolver) {
+      resolver(confirmed);
+    }
+  };
+
+  const getCriticalPathWarnings = (
+    warnings: Array<{ type: string; message: string }>,
+  ): Array<{ type: string; message: string }> => {
+    return warnings.filter((warning) => warning.type !== "nonEmpty");
+  };
+
+  const validateRepairPaths = async (
+    inputPath: string,
+    outputPath: string,
+  ): Promise<Array<{ type: string; message: string }>> => {
+    if (!hasDesktopApi) {
+      return [];
+    }
+
+    const result = await desktopApi.validatePaths(inputPath, outputPath);
+    return result.errors;
+  };
+
+  const refreshRepairPathWarnings = async (
+    inputPath: string,
+    outputPath: string,
+  ): Promise<Array<{ type: string; message: string }>> => {
+    const errors = await validateRepairPaths(inputPath, outputPath);
+    setPathWarnings(errors);
+    return errors;
   };
 
   /**
@@ -471,6 +568,37 @@ const App = () => {
       lastInputFolder ?? selectedInputFolder ?? undefined,
     );
     if (picked) {
+      let nextOutputFolder = selectedOutputFolder;
+
+      if (selectedOutputFolder) {
+        const validationErrors = await validateRepairPaths(
+          picked,
+          selectedOutputFolder,
+        );
+        const criticalWarnings = getCriticalPathWarnings(validationErrors);
+
+        if (criticalWarnings.length > 0) {
+          nextOutputFolder = null;
+          setSelectedOutputFolder(null);
+          setPathWarnings([]);
+          setWarningText(
+            `${criticalWarnings.map((warning) => warning.message).join(" ")} The output folder selection was cleared.`,
+          );
+          setLogs((current) => {
+            return [
+              ...current,
+              {
+                id: crypto.randomUUID(),
+                text: `[WARN] Cleared output folder because it conflicts with the selected input folder: ${picked}`,
+                level: "warn",
+              },
+            ];
+          });
+        } else {
+          setPathWarnings(validationErrors);
+        }
+      }
+
       setCompletedSummary(null);
       setIsReportOpen(false);
       setSelectedInputFolder(picked);
@@ -483,6 +611,15 @@ const App = () => {
             text: `[INFO] Selected input folder: ${picked}`,
             level: "info",
           },
+          ...(nextOutputFolder === null && selectedOutputFolder
+            ? [
+                {
+                  id: crypto.randomUUID(),
+                  text: `[WARN] Output folder deselected after selecting conflicting input folder.`,
+                  level: "warn" as const,
+                },
+              ]
+            : []),
         ];
       });
     }
@@ -504,6 +641,35 @@ const App = () => {
       lastOutputFolder ?? selectedOutputFolder ?? undefined,
     );
     if (picked) {
+      if (selectedInputFolder) {
+        const validationErrors = await validateRepairPaths(
+          selectedInputFolder,
+          picked,
+        );
+        const criticalWarnings = getCriticalPathWarnings(validationErrors);
+
+        if (criticalWarnings.length > 0) {
+          setSelectedOutputFolder(null);
+          setPathWarnings([]);
+          setWarningText(
+            criticalWarnings.map((warning) => warning.message).join(" "),
+          );
+          setLogs((current) => {
+            return [
+              ...current,
+              {
+                id: crypto.randomUUID(),
+                text: `[WARN] Rejected output folder because it conflicts with the selected input folder: ${picked}`,
+                level: "warn",
+              },
+            ];
+          });
+          return;
+        }
+
+        setPathWarnings(validationErrors);
+      }
+
       setCompletedSummary(null);
       setIsReportOpen(false);
       setSelectedOutputFolder(picked);
@@ -526,8 +692,30 @@ const App = () => {
    * @param key Option key to toggle.
    * @returns Nothing.
    */
-  const handleOptionToggle = (key: keyof ProcessOptions): void => {
+  const handleOptionToggle = async (
+    key: keyof ProcessOptions,
+  ): Promise<void> => {
+    if (key === "ignoreZeroCoordinates" && options.ignoreZeroCoordinates) {
+      const confirmed = await requestConfirmation({
+        title: "Disable 0,0 Filtering?",
+        message:
+          "By default, 0,0 coordinates are ignored. Turning this off will write 0,0 as valid coordinates into your files.",
+        confirmLabel: "Disable filter",
+        cancelLabel: "Keep enabled",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
     setOptions((current) => {
+      if (key === "ignoreZeroCoordinates") {
+        return {
+          ...current,
+          ignoreZeroCoordinates: !current.ignoreZeroCoordinates,
+        };
+      }
+
       if (key === "createYearSubfoldersOnly") {
         const nextYearOnly = !current.createYearSubfoldersOnly;
         return {
@@ -587,6 +775,36 @@ const App = () => {
       return;
     }
 
+    const currentPathWarnings = await refreshRepairPathWarnings(
+      selectedInputFolder,
+      selectedOutputFolder,
+    );
+
+    // Check for critical path validation errors
+    const criticalPathErrors = getCriticalPathWarnings(currentPathWarnings);
+    if (criticalPathErrors.length > 0) {
+      setWarningText(
+        `Cannot proceed: ${criticalPathErrors.map((e) => e.message).join(" ")}`,
+      );
+      return;
+    }
+
+    // Show confirmation if non-empty output folder
+    const nonEmptyWarning = currentPathWarnings.find(
+      (warning) => warning.type === "nonEmpty",
+    );
+    if (nonEmptyWarning) {
+      const confirmed = await requestConfirmation({
+        title: "Output Folder Not Empty",
+        message: `${nonEmptyWarning.message} Continue anyway?`,
+        confirmLabel: "Continue",
+        cancelLabel: "Cancel",
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
     if (!hasDesktopApi) {
       setWarningText("Desktop API is unavailable.");
       return;
@@ -623,6 +841,16 @@ const App = () => {
       const roundedSeconds = (summary.durationMs / 1000).toFixed(1);
       setCompletedSummary(summary);
       setIsReportOpen(true);
+      const postRunWarnings = await refreshRepairPathWarnings(
+        selectedInputFolder,
+        selectedOutputFolder,
+      );
+      const postRunNonEmptyWarning = postRunWarnings.find(
+        (warning) => warning.type === "nonEmpty",
+      );
+      if (postRunNonEmptyWarning) {
+        setWarningText(postRunNonEmptyWarning.message);
+      }
       setProgress({
         processed: summary.processed,
         total: summary.total,
@@ -900,6 +1128,90 @@ const App = () => {
         },
       ]);
     } finally {
+      setActiveJob(null);
+    }
+  };
+
+  const handleApplyOrgTempReview = async (): Promise<void> => {
+    if (!hasDesktopApi || !orgCompletedSummary) {
+      return;
+    }
+
+    const tempFolderPath = orgCompletedSummary.report.tempFolderPath;
+    if (!tempFolderPath) {
+      return;
+    }
+
+    const confirmed = await requestConfirmation({
+      title: "Apply Reviewed Result?",
+      message:
+        "Apply the reviewed temporary organisation result to the selected folder? This will replace the original folder contents.",
+      confirmLabel: "Apply",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    setOrgWarningText(null);
+    setIsApplyingOrgTempReview(true);
+    setActiveJob("organise");
+
+    try {
+      const result = await desktopApi.finalizeTempOrganise({
+        targetPath: orgCompletedSummary.report.targetPath,
+        tempFolderPath,
+      });
+
+      if (result.applied) {
+        setOrgCompletedSummary((current) => {
+          if (!current) {
+            return current;
+          }
+
+          const nextReport = {
+            targetPath: current.report.targetPath,
+            movedFilesCount: current.report.movedFilesCount,
+            removedFoldersCount: current.report.removedFoldersCount,
+            problemFiles: current.report.problemFiles,
+          };
+
+          return {
+            ...current,
+            report: {
+              ...nextReport,
+              targetPath: result.targetPath,
+            },
+          };
+        });
+        setOrgStatusText("Reviewed organisation result applied.");
+        setOrgLogs((current): LogEntry[] => {
+          const entry: LogEntry = {
+            id: crypto.randomUUID(),
+            text: `[INFO] Reviewed organisation result applied to ${result.targetPath}`,
+            level: "info",
+          };
+
+          return [...current, entry].slice(-250);
+        });
+      }
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to apply reviewed organisation result.";
+      setOrgWarningText(message);
+      setOrgLogs((current): LogEntry[] => {
+        const entry: LogEntry = {
+          id: crypto.randomUUID(),
+          text: `[ERROR] ${message}`,
+          level: "error",
+        };
+
+        return [...current, entry].slice(-250);
+      });
+    } finally {
+      setIsApplyingOrgTempReview(false);
       setActiveJob(null);
     }
   };
@@ -1261,7 +1573,7 @@ const App = () => {
                             className="peer sr-only"
                             checked={options.writeMetadata}
                             onChange={() => {
-                              handleOptionToggle("writeMetadata");
+                              void handleOptionToggle("writeMetadata");
                             }}
                             disabled={isProcessing}
                           />
@@ -1307,6 +1619,17 @@ const App = () => {
                                 <br />
                                 - writing GPS coordinates and altitude when
                                 available
+                                <br />- matching sidecar JSON files using exact,
+                                fuzzy, and title-based strategies
+                                <br />- applying confidence thresholds so
+                                low-confidence matches are skipped to avoid
+                                incorrect metadata links
+                                <br />( photo.jpg vs
+                                photo.jpg.supplemental-meta.json: High score,
+                                accepted. photo.jpg vs metadata.json: Low score,
+                                rejected. )
+                                <br />- ignoring 0,0 Google Takeout placeholders
+                                when enabled below
                                 <br />- syncing the file modified time from the
                                 trusted sidecar capture timestamp
                                 <br />- restoring the .MOV extension for
@@ -1324,9 +1647,64 @@ const App = () => {
                           <input
                             type="checkbox"
                             className="peer sr-only"
+                            checked={options.ignoreZeroCoordinates}
+                            onChange={() => {
+                              void handleOptionToggle("ignoreZeroCoordinates");
+                            }}
+                            disabled={isProcessing}
+                          />
+                          <span
+                            className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border text-transparent shadow-[inset_0_0_0_1px_rgba(86,182,194,0.22)] transition peer-checked:border-[#56b6c2]/90 peer-checked:bg-gradient-to-br peer-checked:from-[#56b6c2] peer-checked:via-[#61afef] peer-checked:to-[#c678dd] peer-checked:text-[#1b1f2a] peer-focus-visible:ring-2 ${isLightTheme ? "border-[#5a87b9]/45 bg-[#f3f8ff] peer-focus-visible:ring-[#7084dd]/45" : "border-[#61afef]/45 bg-[#1f2430]/85 peer-focus-visible:ring-[#c678dd]/60"}`}
+                          >
+                            <svg
+                              className="h-4 w-4"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M5 12.5L9.5 17L19 7.5"
+                                stroke="currentColor"
+                                strokeWidth="2.4"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </span>
+                          <div className="relative ml-0.5 inline-flex items-center gap-2">
+                            <span
+                              className={`font-body text-lg ${isLightTheme ? "text-[#2f3f56]" : "text-[#d7deea]"}`}
+                            >
+                              Ignore 0,0 geolocation values
+                            </span>
+                            <span className="group/geo-zero-help relative inline-flex h-5 w-5 items-center justify-center">
+                              <Info
+                                className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                aria-hidden="true"
+                              />
+                              <span
+                                className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-72 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/geo-zero-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                              >
+                                Google Takeout often stores missing locations as
+                                0,0. When this option is on, these placeholder
+                                coordinates are ignored so destination files do
+                                not receive false GPS positions.
+                              </span>
+                            </span>
+                          </div>
+                        </label>
+
+                        <label
+                          className={`option-row ${isProcessing ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="peer sr-only"
                             checked={options.createYearMonthSubfolders}
                             onChange={() => {
-                              handleOptionToggle("createYearMonthSubfolders");
+                              void handleOptionToggle(
+                                "createYearMonthSubfolders",
+                              );
                             }}
                             disabled={isProcessing}
                           />
@@ -1363,7 +1741,9 @@ const App = () => {
                             className="peer sr-only"
                             checked={options.createYearSubfoldersOnly}
                             onChange={() => {
-                              handleOptionToggle("createYearSubfoldersOnly");
+                              void handleOptionToggle(
+                                "createYearSubfoldersOnly",
+                              );
                             }}
                             disabled={isProcessing}
                           />
@@ -1396,6 +1776,28 @@ const App = () => {
                   </Accordion>
                 </aside>
               </div>
+
+              {/* ── Path safety warnings ──────────────────────────────── */}
+              {pathWarnings.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {pathWarnings.map((warning) => {
+                    const isCritical = warning.type !== "nonEmpty";
+                    return (
+                      <div
+                        key={`${warning.type}-${warning.message}`}
+                        className={`rounded-xl border px-3 py-2 font-body text-sm ${isCritical ? (isLightTheme ? "border-rose-300/38 bg-rose-100/70 text-rose-700" : "border-rose-300/30 bg-rose-500/10 text-rose-200") : isLightTheme ? "border-amber-300/38 bg-amber-100/60 text-amber-700" : "border-amber-400/30 bg-amber-500/12 text-amber-200"}`}
+                      >
+                        {isCritical ? (
+                          <strong>Error:</strong>
+                        ) : (
+                          <strong>Warning:</strong>
+                        )}{" "}
+                        {warning.message}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="flex h-full flex-col gap-3">
@@ -1642,6 +2044,37 @@ const App = () => {
                             disabled={isOrgProcessing}
                             isLightTheme={isLightTheme}
                           />
+                          <CheckboxRow
+                            label={
+                              <>
+                                Create temporary folder for review
+                                <span className="group/org-temp-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-temp-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Runs organisation in a temporary folder
+                                    inside your selected directory so you can
+                                    review the result first. Keep this off for
+                                    direct in-place organisation.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={Boolean(
+                              orgOptions.createTempFolderForReview,
+                            )}
+                            onChange={() => {
+                              handleOrgOptionToggle(
+                                "createTempFolderForReview",
+                              );
+                            }}
+                            disabled={isOrgProcessing}
+                            isLightTheme={isLightTheme}
+                          />
                         </div>
                       </AccordionItem>
                     </Accordion>
@@ -1826,8 +2259,71 @@ const App = () => {
           open={orgIsReportOpen}
           onOpenChange={setOrgIsReportOpen}
           summary={orgCompletedSummary}
+          onApplyTempReview={handleApplyOrgTempReview}
+          isApplyingTempReview={isApplyingOrgTempReview}
           theme={theme}
         />
+      ) : null}
+      {confirmationDialog?.open ? (
+        <DialogPrimitive.Root
+          open={confirmationDialog.open}
+          onOpenChange={() => {
+            return;
+          }}
+        >
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay
+              className={`fixed inset-0 z-[60] backdrop-blur-sm ${isLightTheme ? "bg-[#d6e1f2]/55" : "bg-slate-950/75"}`}
+            />
+            <DialogPrimitive.Content
+              onEscapeKeyDown={(event) => {
+                event.preventDefault();
+              }}
+              onPointerDownOutside={(event) => {
+                event.preventDefault();
+              }}
+              onInteractOutside={(event) => {
+                event.preventDefault();
+              }}
+              className={`fixed left-1/2 top-1/2 z-[70] w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-3xl border shadow-[0_24px_100px_-24px_rgba(14,165,233,0.45)] ${isLightTheme ? "border-[#5f8dbf]/30 bg-[#f8fbff]" : "border-cyan-300/20 bg-slate-950"}`}
+            >
+              <div
+                className={`border-b px-6 py-5 ${isLightTheme ? "border-[#5f8dbf]/20" : "border-cyan-100/10"}`}
+              >
+                <DialogPrimitive.Title
+                  className={`font-display text-2xl font-semibold ${isLightTheme ? "text-[#2f3f56]" : "text-white"}`}
+                >
+                  {confirmationDialog.title}
+                </DialogPrimitive.Title>
+                <DialogPrimitive.Description
+                  className={`mt-1 text-sm ${isLightTheme ? "text-[#4d6482]" : "text-cyan-100/70"}`}
+                >
+                  {confirmationDialog.message}
+                </DialogPrimitive.Description>
+              </div>
+              <div className="flex justify-end gap-3 px-6 py-5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resolveConfirmation(false);
+                  }}
+                  className={`rounded-2xl border px-4 py-2 font-display text-base font-semibold transition ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff]/90 text-[#2f3f56] hover:border-[#6f6ed0]/58 hover:bg-[#edf3ff]" : "border-[#61afef]/30 bg-[#252b38]/75 text-[#d7deea] hover:border-[#c678dd]/60 hover:bg-[#30384a]/85"}`}
+                >
+                  {confirmationDialog.cancelLabel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resolveConfirmation(true);
+                  }}
+                  className="rounded-2xl bg-gradient-to-r from-[#56b6c2] via-[#61afef] to-[#c678dd] px-4 py-2 font-display text-base font-semibold text-[#1b1f2a] transition hover:from-[#7ad0da] hover:via-[#83c3ff] hover:to-[#d99bf0]"
+                >
+                  {confirmationDialog.confirmLabel}
+                </button>
+              </div>
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
       ) : null}
     </main>
   );

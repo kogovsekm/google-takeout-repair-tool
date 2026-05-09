@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type {
+  FinalizeTempOrganiseRequest,
+  FinalizeTempOrganiseResult,
   PostProcessRequest,
   PostProcessSummary,
   ProcessRequest,
@@ -104,6 +106,15 @@ const api = {
     const summary = await ipcRenderer.invoke("takeout:post-process", request);
     return summary as PostProcessSummary;
   },
+  finalizeTempOrganise: async (
+    request: FinalizeTempOrganiseRequest,
+  ): Promise<FinalizeTempOrganiseResult> => {
+    const result = await ipcRenderer.invoke(
+      "takeout:finalize-temp-organise",
+      request,
+    );
+    return result as FinalizeTempOrganiseResult;
+  },
   /**
    * @description Subscribes to organise-progress events and returns an unsubscribe function.
    * @param listener Callback invoked for each organise progress event.
@@ -121,6 +132,29 @@ const api = {
 
     return () => {
       ipcRenderer.removeListener("takeout:organise-progress", wrappedListener);
+    };
+  },
+  /**
+   * @description Validates that input and output paths do not overlap or have other safety issues.
+   * @param inputPath Repair input path to validate.
+   * @param outputPath Repair output path to validate.
+   * @returns Validation result with any errors found.
+   */
+  validatePaths: async (
+    inputPath: string,
+    outputPath: string,
+  ): Promise<{
+    valid: boolean;
+    errors: Array<{ type: string; message: string }>;
+  }> => {
+    const result = await ipcRenderer.invoke(
+      "takeout:validate-paths",
+      inputPath,
+      outputPath,
+    );
+    return result as {
+      valid: boolean;
+      errors: Array<{ type: string; message: string }>;
     };
   },
 };
