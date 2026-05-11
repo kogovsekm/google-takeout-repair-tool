@@ -21,7 +21,7 @@ It helps restore metadata from Google Takeout sidecar JSON files, repair dates a
 
 ## Endorsement
 
-If you find this app valuable, consider giving it a star :star:.
+If you find this app valuable, consider giving it a star :star:, sharing it with others who might benefit, or contributing to the project if you have ideas for improvements or new features.
 
 ## Why This Exists
 
