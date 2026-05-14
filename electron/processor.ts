@@ -230,7 +230,7 @@ const validateProcessPaths = async (
     // Check if output folder exists and is non-empty
     if (checkNonEmpty && outputExists) {
       const entries = await fs.readdir(realOutputPath);
-      const meaningfulEntries = entries.filter((entry) => {
+      const meaningfulEntries = entries.filter((entry: string) => {
         return !isIgnorableOutputEntry(entry);
       });
       if (meaningfulEntries.length > 0) {
@@ -507,6 +507,44 @@ const findSidecarPath = async (
     sidecarPath: null,
     strategy: "none",
   };
+};
+
+/**
+ * @description Finds the sidecar for the base file of an edited or duplicate variant.
+ * @param mediaPath Path to the variant media file.
+ * @param sidecarLookup Indexed JSON files and matching caches.
+ * @returns Sidecar match result using the base file's sidecar, or a "none" result.
+ */
+const findVariantBaseSidecar = async (
+  mediaPath: string,
+  sidecarLookup: SidecarLookup,
+): Promise<SidecarMatchResult> => {
+  const dirPath = path.dirname(mediaPath);
+  const fileName = path.basename(mediaPath);
+  const extension = path.extname(fileName);
+  const baseName = path.basename(fileName, extension);
+
+  const editedMatch = baseName.match(/^(.+)-edited(\(\d+\))?$/i);
+  const duplicateMatch = baseName.match(/^(.+?)\(\d+\)$/);
+
+  const baseBaseName = editedMatch
+    ? (editedMatch[1] as string)
+    : duplicateMatch
+      ? (duplicateMatch[1] as string).trimEnd()
+      : null;
+
+  if (!baseBaseName) {
+    return { sidecarPath: null, strategy: "none" };
+  }
+
+  const baseFilePath = path.join(dirPath, `${baseBaseName}${extension}`);
+  const baseResult = await findSidecarPath(baseFilePath, sidecarLookup);
+
+  if (baseResult.sidecarPath) {
+    return { sidecarPath: baseResult.sidecarPath, strategy: "variant" };
+  }
+
+  return { sidecarPath: null, strategy: "none" };
 };
 
 /**
@@ -1088,6 +1126,7 @@ export const processTakeoutFolder = async (
     exact: 0,
     fuzzy: 0,
     title: 0,
+    variant: 0,
     none: 0,
   };
 
@@ -1096,10 +1135,21 @@ export const processTakeoutFolder = async (
   try {
     for (const mediaFile of mediaFiles) {
       throwIfAborted(abortSignal);
-      const sidecarMatchResult = await findSidecarPath(
-        mediaFile,
-        sidecarLookup,
-      );
+      let sidecarMatchResult = await findSidecarPath(mediaFile, sidecarLookup);
+
+      if (
+        sidecarMatchResult.strategy === "none" &&
+        request.options.matchVariantSidecars
+      ) {
+        const variantResult = await findVariantBaseSidecar(
+          mediaFile,
+          sidecarLookup,
+        );
+        if (variantResult.sidecarPath) {
+          sidecarMatchResult = variantResult;
+        }
+      }
+
       const sidecarPath = sidecarMatchResult.sidecarPath;
       sidecarMatchSummary[sidecarMatchResult.strategy] += 1;
       let sidecarMetadata: SidecarMetadata | null = null;

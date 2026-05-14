@@ -219,6 +219,7 @@ const App = () => {
     createYearMonthSubfolders: true,
     createYearSubfoldersOnly: false,
     ignoreZeroCoordinates: true,
+    matchVariantSidecars: true,
   });
   const [pathWarnings, setPathWarnings] = useState<
     Array<{ type: string; message: string }>
@@ -1689,6 +1690,62 @@ const App = () => {
                                 0,0. When this option is on, these placeholder
                                 coordinates are ignored so destination files do
                                 not receive false GPS positions.
+                              </span>
+                            </span>
+                          </div>
+                        </label>
+
+                        <label
+                          className={`option-row ${isProcessing ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="peer sr-only"
+                            checked={options.matchVariantSidecars}
+                            onChange={() => {
+                              void handleOptionToggle("matchVariantSidecars");
+                            }}
+                            disabled={isProcessing}
+                          />
+                          <span
+                            className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border text-transparent shadow-[inset_0_0_0_1px_rgba(86,182,194,0.22)] transition peer-checked:border-[#56b6c2]/90 peer-checked:bg-gradient-to-br peer-checked:from-[#56b6c2] peer-checked:via-[#61afef] peer-checked:to-[#c678dd] peer-checked:text-[#1b1f2a] peer-focus-visible:ring-2 ${isLightTheme ? "border-[#5a87b9]/45 bg-[#f3f8ff] peer-focus-visible:ring-[#7084dd]/45" : "border-[#61afef]/45 bg-[#1f2430]/85 peer-focus-visible:ring-[#c678dd]/60"}`}
+                          >
+                            <svg
+                              className="h-4 w-4"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M5 12.5L9.5 17L19 7.5"
+                                stroke="currentColor"
+                                strokeWidth="2.4"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </span>
+                          <div className="relative ml-0.5 inline-flex items-center gap-2">
+                            <span
+                              className={`font-body text-lg ${isLightTheme ? "text-[#2f3f56]" : "text-[#d7deea]"}`}
+                            >
+                              Match .json to edited and copied files
+                            </span>
+                            <span className="group/variant-help relative inline-flex h-5 w-5 items-center justify-center">
+                              <Info
+                                className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                aria-hidden="true"
+                              />
+                              <span
+                                className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-72 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/variant-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                              >
+                                When enabled, if a sidecar JSON is matched for an
+                                original file (e.g. 123.jpg → 123.json), the same
+                                JSON is also applied to edited and duplicate
+                                variants of that file — such as 123-edited.jpg and
+                                123(1).jpg. This ensures edited and copied versions
+                                receive the correct capture date and metadata even
+                                when no dedicated sidecar exists for them.
                               </span>
                             </span>
                           </div>

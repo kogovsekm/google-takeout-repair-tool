@@ -98,6 +98,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: true,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -126,6 +127,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -159,6 +161,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -190,6 +193,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -229,6 +233,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -266,6 +271,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -278,6 +284,227 @@ describe("processTakeoutFolder", () => {
     });
     expect(writeCalls.length).toBeGreaterThan(0);
     expect(summary.report.sidecarMatchSummary.fuzzy).toBe(1);
+  });
+
+  it("applies base sidecar to edited and duplicate variants via matchVariantSidecars option", async () => {
+    const inputPath = await createTempDir("takeout-input-variant-option");
+    const outputPath = await createTempDir("takeout-output-variant-option");
+
+    // Base file + its sidecar (truncated supplemental suffix, like real Takeout exports)
+    await fs.writeFile(path.join(inputPath, "photo.jpg"), "fake-media", "utf8");
+    await writeJson(
+      path.join(inputPath, "photo.jpg.supplemental-metad.json"),
+      { photoTakenTime: { timestamp: "1700000000" }, title: "photo.jpg" },
+    );
+    // Edited and duplicate variants — no dedicated sidecar for either
+    await fs.writeFile(
+      path.join(inputPath, "photo-edited.jpg"),
+      "fake-media",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(inputPath, "photo(1).jpg"),
+      "fake-media",
+      "utf8",
+    );
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    // base file: exact or fuzzy; two variants: both resolved via "variant" strategy
+    expect(summary.report.sidecarMatchSummary.variant).toBe(2);
+  });
+
+  it("leaves variants unmatched when matchVariantSidecars is disabled", async () => {
+    const inputPath = await createTempDir("takeout-input-variant-disabled");
+    const outputPath = await createTempDir("takeout-output-variant-disabled");
+
+    await fs.writeFile(path.join(inputPath, "photo.jpg"), "fake-media", "utf8");
+    await writeJson(
+      path.join(inputPath, "photo.jpg.supplemental-metad.json"),
+      { photoTakenTime: { timestamp: "1700000000" }, title: "photo.jpg" },
+    );
+    await fs.writeFile(
+      path.join(inputPath, "photo-edited.jpg"),
+      "fake-media",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(inputPath, "photo(1).jpg"),
+      "fake-media",
+      "utf8",
+    );
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: false,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    expect(summary.report.sidecarMatchSummary.variant).toBe(0);
+    // variants have no dedicated sidecar and option is off — both should be unmatched
+    expect(summary.report.sidecarMatchSummary.none).toBe(2);
+  });
+
+  it("matches base json sidecar to a filename-edited variant (plain .json)", async () => {
+    const inputPath = await createTempDir("takeout-input-edited-match");
+    const outputPath = await createTempDir("takeout-output-edited-match");
+    const mediaPath = path.join(inputPath, "123-edited.jpg");
+    const sidecarPath = path.join(inputPath, "123.json");
+
+    await fs.writeFile(mediaPath, "fake-media", "utf8");
+    await writeJson(sidecarPath, {
+      photoTakenTime: { timestamp: "1700000000" },
+      title: "123",
+    });
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    expect(summary.report.sidecarMatchSummary.variant).toBe(1);
+  });
+
+  it("matches base json sidecar to a filename-edited(N) numbered variant (plain .json)", async () => {
+    const inputPath = await createTempDir("takeout-input-edited-numbered-match");
+    const outputPath = await createTempDir(
+      "takeout-output-edited-numbered-match",
+    );
+    const mediaPath = path.join(inputPath, "123-edited(1).jpg");
+    const sidecarPath = path.join(inputPath, "123.json");
+
+    await fs.writeFile(mediaPath, "fake-media", "utf8");
+    await writeJson(sidecarPath, {
+      photoTakenTime: { timestamp: "1700000000" },
+      title: "123",
+    });
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    expect(summary.report.sidecarMatchSummary.variant).toBe(1);
+  });
+
+  it("matches supplemental-metad sidecar to its filename-edited variant via variant option", async () => {
+    const inputPath = await createTempDir("takeout-input-edited-fuzzy");
+    const outputPath = await createTempDir("takeout-output-edited-fuzzy");
+    const mediaPath = path.join(inputPath, "IMG_708-edited.jpg");
+    const sidecarPath = path.join(
+      inputPath,
+      "IMG_708.jpg.supplemental-metad.json",
+    );
+
+    await fs.writeFile(mediaPath, "fake-media", "utf8");
+    await writeJson(sidecarPath, {
+      photoTakenTime: { timestamp: "1700000000" },
+      title: "IMG_708.jpg",
+    });
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    expect(summary.report.sidecarMatchSummary.variant).toBe(1);
+  });
+
+  it("matches supplemental-metad sidecar to its filename(N) duplicate variant via variant option", async () => {
+    const inputPath = await createTempDir("takeout-input-duplicate-fuzzy");
+    const outputPath = await createTempDir("takeout-output-duplicate-fuzzy");
+    const mediaPath = path.join(inputPath, "IMG_708(1).jpg");
+    const sidecarPath = path.join(
+      inputPath,
+      "IMG_708.jpg.supplemental-metad.json",
+    );
+
+    await fs.writeFile(mediaPath, "fake-media", "utf8");
+    await writeJson(sidecarPath, {
+      photoTakenTime: { timestamp: "1700000000" },
+      title: "IMG_708.jpg",
+    });
+
+    const summary = await processTakeoutFolder(
+      {
+        inputPath,
+        outputPath,
+        options: {
+          writeMetadata: true,
+          createYearMonthSubfolders: false,
+          createYearSubfoldersOnly: false,
+          ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
+        },
+      },
+      () => {
+        return;
+      },
+    );
+
+    expect(summary.report.sidecarMatchSummary.variant).toBe(1);
   });
 
   it("does not force-match unrelated low-confidence json sidecars", async () => {
@@ -301,6 +528,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -339,6 +567,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: true,
+          matchVariantSidecars: true,
         },
       },
       () => {
@@ -391,6 +620,7 @@ describe("processTakeoutFolder", () => {
           createYearMonthSubfolders: false,
           createYearSubfoldersOnly: false,
           ignoreZeroCoordinates: false,
+          matchVariantSidecars: true,
         },
       },
       () => {
