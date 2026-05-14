@@ -3,6 +3,7 @@ export type ProcessOptions = {
   createYearMonthSubfolders: boolean;
   createYearSubfoldersOnly: boolean;
   ignoreZeroCoordinates: boolean;
+  matchVariantSidecars: boolean;
 };
 
 export type ProcessRequest = {
@@ -40,12 +41,13 @@ export type FileOutcomeTag =
   | "copied only"
   | "warning";
 
-export type SidecarMatchStrategy = "exact" | "fuzzy" | "title" | "none";
+export type SidecarMatchStrategy = "exact" | "fuzzy" | "title" | "variant" | "none";
 
 export type SidecarMatchSummary = {
   exact: number;
   fuzzy: number;
   title: number;
+  variant: number;
   none: number;
 };
 
