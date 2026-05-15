@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+
+declare const __APP_VERSION__: string;
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   CircleAlert,
@@ -1277,6 +1279,9 @@ const App = () => {
                 className={`font-body text-xs uppercase tracking-[0.25em] ${isLightTheme ? "text-[#3c6ea7]" : "text-[#61afef]/80"}`}
               >
                 Google Takeout Repair Tool
+                <span className="ml-2 normal-case tracking-normal opacity-50">
+                  v{__APP_VERSION__}
+                </span>
               </p>
               <div className="flex items-center gap-2">
                 <h1
