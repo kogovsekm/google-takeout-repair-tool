@@ -1739,13 +1739,15 @@ const App = () => {
                               <span
                                 className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-72 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/variant-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
                               >
-                                When enabled, if a sidecar JSON is matched for an
-                                original file (e.g. 123.jpg → 123.json), the same
-                                JSON is also applied to edited and duplicate
-                                variants of that file — such as 123-edited.jpg and
-                                123(1).jpg. This ensures edited and copied versions
-                                receive the correct capture date and metadata even
-                                when no dedicated sidecar exists for them.
+                                When enabled, if a sidecar JSON (JSON file
+                                provided by Google Takeout) is matched for an
+                                original file (e.g. 123.jpg → 123.json), the
+                                same JSON is also applied to edited and
+                                duplicate variants of that file — such as
+                                123-edited.jpg and 123(1).jpg. This ensures
+                                edited and copied versions receive the correct
+                                capture date and metadata even when no dedicated
+                                sidecar exists for them.
                               </span>
                             </span>
                           </div>
