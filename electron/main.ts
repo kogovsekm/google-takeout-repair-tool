@@ -87,15 +87,15 @@ const isValidPostProcessRequest = (
 
   const obj = request as Record<string, unknown>;
   const hasValidTargetPath = isValidPath(obj.targetPath);
+  const opts = obj.options as Record<string, unknown>;
   const hasValidOptions =
     typeof obj.options === "object" &&
     obj.options !== null &&
-    typeof (obj.options as Record<string, unknown>).flattenMonthsToYears ===
-      "boolean" &&
-    typeof (obj.options as Record<string, unknown>).flattenYearsToRoot ===
-      "boolean" &&
-    typeof (obj.options as Record<string, unknown>).removeEmptyFolders ===
-      "boolean";
+    typeof opts.flattenMonthsToYears === "boolean" &&
+    typeof opts.flattenAllToRoot === "boolean" &&
+    typeof opts.removeEmptyFolders === "boolean" &&
+    (opts.flattenIntoHalves === undefined ||
+      typeof opts.flattenIntoHalves === "boolean");
 
   return hasValidTargetPath && hasValidOptions;
 };
