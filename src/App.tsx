@@ -265,6 +265,9 @@ const App = () => {
     removeEmptyFolders: true,
     createTempFolderForReview: true,
     flattenIntoHalves: false,
+    writeModifiedToCreated: false,
+    writeCreatedToModified: false,
+    coerceBothToLowest: false,
   });
   const orgLogsContainerRef = useRef<HTMLDivElement | null>(null);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -1031,18 +1034,21 @@ const App = () => {
   const handleOrgOptionToggle = (key: keyof PostProcessOptions): void => {
     setOrgOptions((current) => {
       const next = { ...current, [key]: !current[key] };
-      // All three folder options are mutually exclusive.
-      if (key === "flattenMonthsToYears" && next.flattenMonthsToYears) {
-        next.flattenAllToRoot = false;
-        next.flattenIntoHalves = false;
-      }
-      if (key === "flattenAllToRoot" && next.flattenAllToRoot) {
-        next.flattenMonthsToYears = false;
-        next.flattenIntoHalves = false;
-      }
-      if (key === "flattenIntoHalves" && next.flattenIntoHalves) {
-        next.flattenMonthsToYears = false;
-        next.flattenAllToRoot = false;
+      // All six folder-action options are mutually exclusive.
+      const FOLDER_ACTION_KEYS: Array<keyof PostProcessOptions> = [
+        "flattenMonthsToYears",
+        "flattenAllToRoot",
+        "flattenIntoHalves",
+        "writeModifiedToCreated",
+        "writeCreatedToModified",
+        "coerceBothToLowest",
+      ];
+      if (FOLDER_ACTION_KEYS.includes(key) && next[key]) {
+        for (const other of FOLDER_ACTION_KEYS) {
+          if (other !== key) {
+            next[other] = false;
+          }
+        }
       }
       return next;
     });
@@ -1051,7 +1057,10 @@ const App = () => {
   const hasFolderActionSelected =
     orgOptions.flattenMonthsToYears ||
     orgOptions.flattenAllToRoot ||
-    Boolean(orgOptions.flattenIntoHalves);
+    Boolean(orgOptions.flattenIntoHalves) ||
+    Boolean(orgOptions.writeModifiedToCreated) ||
+    Boolean(orgOptions.writeCreatedToModified) ||
+    Boolean(orgOptions.coerceBothToLowest);
 
   /**
    * @description Validates state and starts folder organisation through the Electron bridge.
@@ -2165,6 +2174,90 @@ const App = () => {
                             checked={Boolean(orgOptions.flattenIntoHalves)}
                             onChange={() => {
                               handleOrgOptionToggle("flattenIntoHalves");
+                            }}
+                            disabled={isOrgProcessing}
+                            isLightTheme={isLightTheme}
+                          />
+                          <CheckboxRow
+                            label={
+                              <>
+                                Write modified date to created date
+                                <span className="group/org-mod-to-created-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-mod-to-created-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Scans all media files in the selected folder
+                                    recursively and sets the created date equal
+                                    to the modified date, making both values
+                                    identical. Other file metadata is not
+                                    changed.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={Boolean(orgOptions.writeModifiedToCreated)}
+                            onChange={() => {
+                              handleOrgOptionToggle("writeModifiedToCreated");
+                            }}
+                            disabled={isOrgProcessing}
+                            isLightTheme={isLightTheme}
+                          />
+                          <CheckboxRow
+                            label={
+                              <>
+                                Write created date to modified date
+                                <span className="group/org-created-to-mod-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-created-to-mod-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Scans all media files in the selected folder
+                                    recursively and sets the modified date equal
+                                    to the created date, making both values
+                                    identical. Other file metadata is not
+                                    changed.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={Boolean(orgOptions.writeCreatedToModified)}
+                            onChange={() => {
+                              handleOrgOptionToggle("writeCreatedToModified");
+                            }}
+                            disabled={isOrgProcessing}
+                            isLightTheme={isLightTheme}
+                          />
+                          <CheckboxRow
+                            label={
+                              <>
+                                Coerce dates to lowest value
+                                <span className="group/org-coerce-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-coerce-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Scans all media files in the selected folder
+                                    recursively, compares the created and
+                                    modified dates, and sets both to whichever
+                                    is earlier. Other file metadata is not
+                                    changed.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={Boolean(orgOptions.coerceBothToLowest)}
+                            onChange={() => {
+                              handleOrgOptionToggle("coerceBothToLowest");
                             }}
                             disabled={isOrgProcessing}
                             isLightTheme={isLightTheme}
