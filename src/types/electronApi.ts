@@ -88,12 +88,20 @@ export type HalvesSplitReport = {
   h2SizeBytes: number;
 };
 
+export type TimestampSyncReport = {
+  processedCount: number;
+  successCount: number;
+};
+
 export type PostProcessOptions = {
   flattenMonthsToYears: boolean;
   flattenAllToRoot: boolean;
   removeEmptyFolders: boolean;
   createTempFolderForReview?: boolean;
   flattenIntoHalves?: boolean;
+  writeModifiedToCreated?: boolean;
+  writeCreatedToModified?: boolean;
+  coerceBothToLowest?: boolean;
 };
 
 export type PostProcessRequest = {
@@ -108,6 +116,7 @@ export type PostProcessReport = {
   problemFiles: Array<ProblemFile>;
   tempFolderPath?: string;
   halvesReport?: HalvesSplitReport;
+  timestampSyncReport?: TimestampSyncReport;
 };
 
 export type PostProcessSummary = {
