@@ -1097,3 +1097,168 @@ describe("flattenAllToRoot", () => {
     expect(summary.report.movedFilesCount).toBe(1);
   });
 });
+
+describe("syncTimestampsInFolder via postProcessFolder", () => {
+  const noop = (): void => { return; };
+
+  afterEach(() => {
+    mockExifToolInstances.length = 0;
+    mockWriteCallCount = 0;
+    mockWriteMode = "normal";
+  });
+
+  it("writeModifiedToCreated: writes FileCreateDate = mtime via ExifTool", async () => {
+    const targetPath = await createTempDir("ts-sync-mod-to-created");
+    const filePath = path.join(targetPath, "photo.jpg");
+    await fs.writeFile(filePath, "fake-media", "utf8");
+
+    const mtime = new Date("2018-01-24T17:28:52.000Z");
+    await fs.utimes(filePath, mtime, mtime);
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          writeModifiedToCreated: true,
+        },
+      },
+      noop,
+    );
+
+    expect(summary.report.timestampSyncReport?.processedCount).toBe(1);
+    expect(summary.report.timestampSyncReport?.successCount).toBe(1);
+
+    const writeInstance = mockExifToolInstances[mockExifToolInstances.length - 1];
+    if (!writeInstance) {
+      throw new Error("No ExifTool instance was created");
+    }
+    const writeCalls = writeInstance.write.mock.calls;
+    const fileCreateDateCall = writeCalls.find(
+      ([, tags]) => (tags as Record<string, unknown>).FileCreateDate !== undefined,
+    );
+    if (!fileCreateDateCall) {
+      throw new Error("ExifTool.write was not called with FileCreateDate");
+    }
+    const writtenDate = (fileCreateDateCall[1] as Record<string, unknown>).FileCreateDate as Date;
+    expect(Math.floor(writtenDate.getTime() / 1000)).toBe(Math.floor(mtime.getTime() / 1000));
+  });
+
+  it("writeCreatedToModified: sets mtime = birthtime via fs.utimes", async () => {
+    const targetPath = await createTempDir("ts-sync-created-to-mod");
+    const filePath = path.join(targetPath, "photo.jpg");
+    await fs.writeFile(filePath, "fake-media", "utf8");
+
+    const { birthtime } = await fs.stat(filePath);
+
+    // Set mtime to a far-future date so it clearly differs from birthtime.
+    // Using a future date (not a past one) avoids macOS APFS silently updating
+    // birthtime to match when mtime < birthtime.
+    const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+    const futureMtime = new Date(birthtime.getTime() + TEN_YEARS_MS);
+    await fs.utimes(filePath, futureMtime, futureMtime);
+
+    await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          writeCreatedToModified: true,
+        },
+      },
+      noop,
+    );
+
+    const { mtime: newMtime } = await fs.stat(filePath);
+    // mtime should now match birthtime (at second precision)
+    expect(Math.floor(newMtime.getTime() / 1000)).toBe(
+      Math.floor(birthtime.getTime() / 1000),
+    );
+  });
+
+  it("coerceBothToLowest: sets mtime = birthtime when birthtime is earlier", async () => {
+    const targetPath = await createTempDir("ts-sync-coerce");
+    const filePath = path.join(targetPath, "photo.jpg");
+    await fs.writeFile(filePath, "fake-media", "utf8");
+
+    const { birthtime } = await fs.stat(filePath);
+
+    // Set mtime to a far-future date so mtime > birthtime (the standard macOS state).
+    // coerceBothToLowest should pull mtime down to birthtime (the lower value).
+    const TEN_YEARS_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+    const futureMtime = new Date(birthtime.getTime() + TEN_YEARS_MS);
+    await fs.utimes(filePath, futureMtime, futureMtime);
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          coerceBothToLowest: true,
+        },
+      },
+      noop,
+    );
+
+    expect(summary.report.timestampSyncReport?.processedCount).toBe(1);
+    expect(summary.report.timestampSyncReport?.successCount).toBe(1);
+
+    // mtime should now match birthtime (coerced to the lower value)
+    const { mtime: newMtime } = await fs.stat(filePath);
+    expect(Math.floor(newMtime.getTime() / 1000)).toBe(
+      Math.floor(birthtime.getTime() / 1000),
+    );
+  });
+
+  it("skips non-media files and counts only media files", async () => {
+    const targetPath = await createTempDir("ts-sync-non-media");
+    await fs.writeFile(path.join(targetPath, "photo.jpg"), "fake-media", "utf8");
+    await fs.writeFile(path.join(targetPath, "notes.txt"), "text", "utf8");
+    await fs.writeFile(path.join(targetPath, "data.json"), "{}", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          writeModifiedToCreated: true,
+        },
+      },
+      noop,
+    );
+
+    // Only the .jpg counts
+    expect(summary.report.timestampSyncReport?.processedCount).toBe(1);
+  });
+
+  it("scans subdirectories recursively", async () => {
+    const targetPath = await createTempDir("ts-sync-recursive");
+    const subDir = path.join(targetPath, "2018", "01");
+    await fs.mkdir(subDir, { recursive: true });
+    await fs.writeFile(path.join(targetPath, "a.jpg"), "x", "utf8");
+    await fs.writeFile(path.join(subDir, "b.jpg"), "x", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          writeModifiedToCreated: true,
+        },
+      },
+      noop,
+    );
+
+    expect(summary.report.timestampSyncReport?.processedCount).toBe(2);
+  });
+});

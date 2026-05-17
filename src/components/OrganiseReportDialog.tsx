@@ -1,4 +1,4 @@
-import type { HalvesSplitReport, PostProcessSummary } from "../types/electronApi";
+import type { HalvesSplitReport, PostProcessSummary, TimestampSyncReport } from "../types/electronApi";
 import { Dialog, DialogContent } from "./ui/Dialog";
 
 type OrganiseReportDialogProps = {
@@ -83,6 +83,53 @@ const HalvesCard = ({ halvesReport, theme }: HalvesCardProps) => {
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+};
+
+type TimestampSyncCardProps = {
+  timestampSyncReport: TimestampSyncReport;
+  theme: "dark" | "light";
+};
+
+const TimestampSyncCard = ({ timestampSyncReport, theme }: TimestampSyncCardProps) => {
+  const isLightTheme = theme === "light";
+
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-4 ${isLightTheme ? "border-[#5f8dbf]/25 bg-[#f0f5ff]" : "border-cyan-100/10 bg-slate-900/70"}`}
+    >
+      <p
+        className={`mb-3 text-xs uppercase tracking-[0.22em] ${isLightTheme ? "text-[#4f77a6]/75" : "text-cyan-200/60"}`}
+      >
+        Timestamp sync
+      </p>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <span
+            className={`text-sm ${isLightTheme ? "text-[#395170]" : "text-cyan-100/80"}`}
+          >
+            Files scanned
+          </span>
+          <span
+            className={`font-mono text-sm font-semibold ${isLightTheme ? "text-[#2f3f56]" : "text-white"}`}
+          >
+            {timestampSyncReport.processedCount}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <span
+            className={`text-sm ${isLightTheme ? "text-[#395170]" : "text-cyan-100/80"}`}
+          >
+            Successful updates
+          </span>
+          <span
+            className={`font-mono text-sm font-semibold ${isLightTheme ? "text-[#2f3f56]" : "text-white"}`}
+          >
+            {timestampSyncReport.successCount}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -176,28 +223,49 @@ const OrganiseReportDialog = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
-            label="Files moved"
-            value={report.movedFilesCount}
-            theme={theme}
-          />
-          <StatCard
-            label="Folders removed"
-            value={report.removedFoldersCount}
-            theme={theme}
-          />
-          <StatCard
-            label="Warnings"
-            value={summary.warnings.length}
-            theme={theme}
-          />
-          <StatCard
-            label="Problems"
-            value={report.problemFiles.length}
-            theme={theme}
-          />
-        </div>
+        {report.timestampSyncReport ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="sm:col-span-1">
+              <TimestampSyncCard
+                timestampSyncReport={report.timestampSyncReport}
+                theme={theme}
+              />
+            </div>
+            <StatCard
+              label="Warnings"
+              value={summary.warnings.length}
+              theme={theme}
+            />
+            <StatCard
+              label="Problems"
+              value={report.problemFiles.length}
+              theme={theme}
+            />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard
+              label="Files moved"
+              value={report.movedFilesCount}
+              theme={theme}
+            />
+            <StatCard
+              label="Folders removed"
+              value={report.removedFoldersCount}
+              theme={theme}
+            />
+            <StatCard
+              label="Warnings"
+              value={summary.warnings.length}
+              theme={theme}
+            />
+            <StatCard
+              label="Problems"
+              value={report.problemFiles.length}
+              theme={theme}
+            />
+          </div>
+        )}
 
         {report.halvesReport ? (
           <div className="mt-3">
