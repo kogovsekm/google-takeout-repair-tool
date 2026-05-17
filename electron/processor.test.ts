@@ -1132,13 +1132,17 @@ describe("syncTimestampsInFolder via postProcessFolder", () => {
     expect(summary.report.timestampSyncReport?.successCount).toBe(1);
 
     const writeInstance = mockExifToolInstances[mockExifToolInstances.length - 1];
-    expect(writeInstance).toBeDefined();
-    const writeCalls = writeInstance!.write.mock.calls;
+    if (!writeInstance) {
+      throw new Error("No ExifTool instance was created");
+    }
+    const writeCalls = writeInstance.write.mock.calls;
     const fileCreateDateCall = writeCalls.find(
       ([, tags]) => (tags as Record<string, unknown>).FileCreateDate !== undefined,
     );
-    expect(fileCreateDateCall).toBeDefined();
-    const writtenDate = (fileCreateDateCall![1] as Record<string, unknown>).FileCreateDate as Date;
+    if (!fileCreateDateCall) {
+      throw new Error("ExifTool.write was not called with FileCreateDate");
+    }
+    const writtenDate = (fileCreateDateCall[1] as Record<string, unknown>).FileCreateDate as Date;
     expect(Math.floor(writtenDate.getTime() / 1000)).toBe(Math.floor(mtime.getTime() / 1000));
   });
 
