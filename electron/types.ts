@@ -89,11 +89,19 @@ export type PathValidationError = {
   overlappingPath?: string;
 };
 
+export type HalvesSplitReport = {
+  h1FileCount: number;
+  h2FileCount: number;
+  h1SizeBytes: number;
+  h2SizeBytes: number;
+};
+
 export type PostProcessOptions = {
   flattenMonthsToYears: boolean;
-  flattenYearsToRoot: boolean;
+  flattenAllToRoot: boolean;
   removeEmptyFolders: boolean;
   createTempFolderForReview?: boolean;
+  flattenIntoHalves?: boolean;
 };
 
 export type PostProcessRequest = {
@@ -107,6 +115,7 @@ export type PostProcessReport = {
   removedFoldersCount: number;
   problemFiles: Array<ProblemFile>;
   tempFolderPath?: string;
+  halvesReport?: HalvesSplitReport;
 };
 
 export type PostProcessSummary = {

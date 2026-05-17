@@ -1,4 +1,4 @@
-import type { PostProcessSummary } from "../types/electronApi";
+import type { HalvesSplitReport, PostProcessSummary } from "../types/electronApi";
 import { Dialog, DialogContent } from "./ui/Dialog";
 
 type OrganiseReportDialogProps = {
@@ -14,6 +14,78 @@ type StatCardProps = {
   label: string;
   value: number;
   theme: "dark" | "light";
+};
+
+/**
+ * @description Formats a byte count into a human-readable string (e.g. 3.20 GB).
+ * @param bytes Raw byte count.
+ * @returns Formatted size string.
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(2)} ${units[exponent]}`;
+}
+
+type HalvesCardProps = {
+  halvesReport: HalvesSplitReport;
+  theme: "dark" | "light";
+};
+
+const HalvesCard = ({ halvesReport, theme }: HalvesCardProps) => {
+  const isLightTheme = theme === "light";
+
+  const rows: Array<{ half: string; files: number; size: string }> = [
+    {
+      half: "H1",
+      files: halvesReport.h1FileCount,
+      size: formatBytes(halvesReport.h1SizeBytes),
+    },
+    ...(halvesReport.h2FileCount > 0
+      ? [
+          {
+            half: "H2",
+            files: halvesReport.h2FileCount,
+            size: formatBytes(halvesReport.h2SizeBytes),
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-4 ${isLightTheme ? "border-[#5f8dbf]/25 bg-[#f0f5ff]" : "border-cyan-100/10 bg-slate-900/70"}`}
+    >
+      <p
+        className={`mb-3 text-xs uppercase tracking-[0.22em] ${isLightTheme ? "text-[#4f77a6]/75" : "text-cyan-200/60"}`}
+      >
+        Halves breakdown
+      </p>
+      <div className="space-y-2">
+        {rows.map(({ half, files, size }) => (
+          <div key={half} className="flex items-center justify-between gap-4">
+            <span
+              className={`font-mono text-sm font-semibold ${isLightTheme ? "text-[#2f3f56]" : "text-white"}`}
+            >
+              {half}
+            </span>
+            <span
+              className={`text-sm ${isLightTheme ? "text-[#395170]" : "text-cyan-100/80"}`}
+            >
+              {files} {files === 1 ? "file" : "files"} &mdash; {size}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 };
 
 const StatCard = ({ label, value, theme }: StatCardProps) => {
@@ -126,6 +198,12 @@ const OrganiseReportDialog = ({
             theme={theme}
           />
         </div>
+
+        {report.halvesReport ? (
+          <div className="mt-3">
+            <HalvesCard halvesReport={report.halvesReport} theme={theme} />
+          </div>
+        ) : null}
 
         {summary.warnings.length > 0 && (
           <div className="mt-5">

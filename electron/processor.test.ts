@@ -664,6 +664,136 @@ describe("finalizeTempOrganise", () => {
   });
 });
 
+describe("timestamp preservation during organisation moves", () => {
+  const noop = (): void => {
+    return;
+  };
+
+  const originalDate = new Date("2022-01-15T07:50:00.000Z");
+
+  it("preserves mtime after flattenMonthsToYears", async () => {
+    const targetPath = await createTempDir("takeout-ts-months");
+    const monthPath = path.join(targetPath, "2022", "01");
+    await fs.mkdir(monthPath, { recursive: true });
+    const filePath = path.join(monthPath, "photo.jpg");
+    await fs.writeFile(filePath, "data", "utf8");
+    await fs.utimes(filePath, originalDate, originalDate);
+
+    await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: true,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    const moved = path.join(targetPath, "2022", "photo.jpg");
+    const { mtime } = await fs.stat(moved);
+    expect(mtime.getTime()).toBe(originalDate.getTime());
+  });
+
+  it("preserves mtime after flattenAllToRoot", async () => {
+    const targetPath = await createTempDir("takeout-ts-all-root");
+    const subDir = path.join(targetPath, "misc");
+    await fs.mkdir(subDir, { recursive: true });
+    const filePath = path.join(subDir, "photo.jpg");
+    await fs.writeFile(filePath, "data", "utf8");
+    await fs.utimes(filePath, originalDate, originalDate);
+
+    await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    const moved = path.join(targetPath, "photo.jpg");
+    const { mtime } = await fs.stat(moved);
+    expect(mtime.getTime()).toBe(originalDate.getTime());
+  });
+
+  it("preserves mtime after flattenIntoHalves", async () => {
+    const targetPath = await createTempDir("takeout-ts-halves");
+    const filePath = path.join(targetPath, "photo.jpg");
+    await fs.writeFile(filePath, "data", "utf8");
+    await fs.utimes(filePath, originalDate, originalDate);
+
+    await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    const moved = path.join(targetPath, "H1", "photo.jpg");
+    const { mtime } = await fs.stat(moved);
+    expect(mtime.getTime()).toBe(originalDate.getTime());
+  });
+});
+
+describe("timestamp preservation through temp-folder round trip", () => {
+  const noop = (): void => {
+    return;
+  };
+
+  const originalDate = new Date("2022-01-15T07:50:00.000Z");
+
+  it("preserves mtime through copy → organise → apply when using temp folder", async () => {
+    const targetPath = await createTempDir("takeout-ts-tempfolder");
+    const subDir = path.join(targetPath, "misc");
+    await fs.mkdir(subDir, { recursive: true });
+    const filePath = path.join(subDir, "photo.jpg");
+    await fs.writeFile(filePath, "data", "utf8");
+    await fs.utimes(filePath, originalDate, originalDate);
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+          createTempFolderForReview: true,
+        },
+      },
+      noop,
+    );
+
+    const tempFolderPath = summary.report.tempFolderPath;
+    if (!tempFolderPath) {
+      throw new Error("Expected a temp folder path in the report");
+    }
+
+    // Verify mtime is preserved inside the temp folder before apply.
+    const tempFile = path.join(tempFolderPath, "photo.jpg");
+    const { mtime: mtimeInTemp } = await fs.stat(tempFile);
+    expect(mtimeInTemp.getTime()).toBe(originalDate.getTime());
+
+    // Apply the reviewed result.
+    await finalizeTempOrganise(targetPath, tempFolderPath);
+
+    // Verify mtime is still preserved after apply.
+    const finalFile = path.join(targetPath, "photo.jpg");
+    const { mtime: mtimeFinal } = await fs.stat(finalFile);
+    expect(mtimeFinal.getTime()).toBe(originalDate.getTime());
+  });
+});
+
 describe("postProcessFolder", () => {
   it("creates a temp review folder without attempting to copy the folder into itself", async () => {
     const targetPath = await createTempDir("takeout-post-process-temp");
@@ -679,7 +809,7 @@ describe("postProcessFolder", () => {
         targetPath,
         options: {
           flattenMonthsToYears: true,
-          flattenYearsToRoot: false,
+          flattenAllToRoot: false,
           removeEmptyFolders: true,
           createTempFolderForReview: true,
         },
@@ -691,5 +821,279 @@ describe("postProcessFolder", () => {
 
     expect(summary.report.tempFolderPath).toBeTruthy();
     expect(summary.report.tempFolderPath).toContain("-temp-");
+  });
+});
+
+describe("flattenIntoHalves", () => {
+  const noop = (): void => {
+    return;
+  };
+
+  it("places every file into H1 or H2 — no files are lost", async () => {
+    const targetPath = await createTempDir("takeout-halves-all-included");
+
+    await fs.writeFile(path.join(targetPath, "a.jpg"), "x".repeat(100), "utf8");
+    await fs.writeFile(path.join(targetPath, "b.jpg"), "x".repeat(200), "utf8");
+    await fs.writeFile(path.join(targetPath, "c.jpg"), "x".repeat(300), "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    const h1Files = await fs.readdir(path.join(targetPath, "H1"));
+    const h2Files = await fs.readdir(path.join(targetPath, "H2"));
+    const totalMoved = h1Files.length + h2Files.length;
+
+    expect(totalMoved).toBe(3);
+    expect(summary.report.halvesReport?.h1FileCount).toBeGreaterThan(0);
+    expect(summary.report.halvesReport?.h2FileCount).toBeGreaterThan(0);
+    expect(
+      (summary.report.halvesReport?.h1FileCount ?? 0) +
+        (summary.report.halvesReport?.h2FileCount ?? 0),
+    ).toBe(3);
+  });
+
+  it("puts a single file into H1 only and never creates H2", async () => {
+    const targetPath = await createTempDir("takeout-halves-single-file");
+
+    await fs.writeFile(
+      path.join(targetPath, "only.jpg"),
+      "x".repeat(500),
+      "utf8",
+    );
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    const h1Files = await fs.readdir(path.join(targetPath, "H1"));
+    const h2Exists = await fs
+      .access(path.join(targetPath, "H2"))
+      .then(() => true)
+      .catch(() => false);
+
+    expect(h1Files).toHaveLength(1);
+    expect(h2Exists).toBe(false);
+    expect(summary.report.halvesReport?.h1FileCount).toBe(1);
+    expect(summary.report.halvesReport?.h2FileCount).toBe(0);
+  });
+
+  it("balances a large file against many small files correctly", async () => {
+    const targetPath = await createTempDir("takeout-halves-large-vs-small");
+
+    // One 600-byte file and ten 30-byte files (300 bytes total).
+    // Greedy largest-first: big file → H1 (600), then all small → H2 (300).
+    await fs.writeFile(
+      path.join(targetPath, "big.jpg"),
+      "x".repeat(600),
+      "utf8",
+    );
+    for (let i = 0; i < 10; i++) {
+      await fs.writeFile(
+        path.join(targetPath, `small-${i}.jpg`),
+        "x".repeat(30),
+        "utf8",
+      );
+    }
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    const h1Files = await fs.readdir(path.join(targetPath, "H1"));
+    const h2Files = await fs.readdir(path.join(targetPath, "H2"));
+
+    // All 11 files must be present across both halves.
+    expect(h1Files.length + h2Files.length).toBe(11);
+    // The big file alone goes to H1; the ten small files go to H2.
+    expect(h1Files).toHaveLength(1);
+    expect(h2Files).toHaveLength(10);
+    expect(summary.report.halvesReport?.h1SizeBytes).toBeGreaterThan(
+      summary.report.halvesReport?.h2SizeBytes ?? 0,
+    );
+  });
+
+  it("scans files recursively from sub-folders", async () => {
+    const targetPath = await createTempDir("takeout-halves-recursive");
+    const subDir = path.join(targetPath, "nested");
+    await fs.mkdir(subDir, { recursive: true });
+
+    await fs.writeFile(path.join(targetPath, "root.jpg"), "x".repeat(100), "utf8");
+    await fs.writeFile(path.join(subDir, "deep.jpg"), "x".repeat(100), "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    const h1Files = await fs.readdir(path.join(targetPath, "H1"));
+    const h2Files = await fs.readdir(path.join(targetPath, "H2"));
+
+    expect(h1Files.length + h2Files.length).toBe(2);
+    expect(
+      (summary.report.halvesReport?.h1FileCount ?? 0) +
+        (summary.report.halvesReport?.h2FileCount ?? 0),
+    ).toBe(2);
+  });
+
+  it("reports zero problem files when all moves succeed", async () => {
+    const targetPath = await createTempDir("takeout-halves-no-problems");
+
+    await fs.writeFile(path.join(targetPath, "x.jpg"), "data", "utf8");
+    await fs.writeFile(path.join(targetPath, "y.jpg"), "data", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: false,
+          removeEmptyFolders: false,
+          flattenIntoHalves: true,
+        },
+      },
+      noop,
+    );
+
+    expect(summary.report.problemFiles).toHaveLength(0);
+    expect(summary.warnings).toHaveLength(0);
+  });
+});
+
+describe("flattenAllToRoot", () => {
+  const noop = (): void => {
+    return;
+  };
+
+  it("moves files from deeply nested sub-folders into the root", async () => {
+    const targetPath = await createTempDir("takeout-flatten-all-root");
+    const deepDir = path.join(targetPath, "a", "b", "c");
+    await fs.mkdir(deepDir, { recursive: true });
+    await fs.writeFile(path.join(deepDir, "deep.jpg"), "data", "utf8");
+    await fs.writeFile(path.join(targetPath, "root.jpg"), "data", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    const entries = await fs.readdir(targetPath);
+    expect(entries).toContain("deep.jpg");
+    expect(entries).toContain("root.jpg");
+    expect(summary.report.movedFilesCount).toBe(1);
+  });
+
+  it("removes now-empty sub-folders after flattening", async () => {
+    const targetPath = await createTempDir("takeout-flatten-all-cleanup");
+    const subDir = path.join(targetPath, "2023", "06");
+    await fs.mkdir(subDir, { recursive: true });
+    await fs.writeFile(path.join(subDir, "photo.jpg"), "data", "utf8");
+
+    await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    const yearExists = await fs
+      .access(path.join(targetPath, "2023"))
+      .then(() => true)
+      .catch(() => false);
+
+    expect(yearExists).toBe(false);
+    const entries = await fs.readdir(targetPath);
+    expect(entries).toContain("photo.jpg");
+  });
+
+  it("leaves files already at root level untouched", async () => {
+    const targetPath = await createTempDir("takeout-flatten-all-root-only");
+    await fs.writeFile(path.join(targetPath, "a.jpg"), "data", "utf8");
+    await fs.writeFile(path.join(targetPath, "b.jpg"), "data", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    expect(summary.report.movedFilesCount).toBe(0);
+    expect(summary.report.problemFiles).toHaveLength(0);
+  });
+
+  it("flattens non-year-named sub-folders that flattenMonthsToYears would ignore", async () => {
+    const targetPath = await createTempDir("takeout-flatten-all-arbitrary");
+    const arbitrary = path.join(targetPath, "misc", "stuff");
+    await fs.mkdir(arbitrary, { recursive: true });
+    await fs.writeFile(path.join(arbitrary, "file.mp4"), "data", "utf8");
+
+    const summary = await postProcessFolder(
+      {
+        targetPath,
+        options: {
+          flattenMonthsToYears: false,
+          flattenAllToRoot: true,
+          removeEmptyFolders: false,
+        },
+      },
+      noop,
+    );
+
+    const entries = await fs.readdir(targetPath);
+    expect(entries).toContain("file.mp4");
+    expect(summary.report.movedFilesCount).toBe(1);
   });
 });

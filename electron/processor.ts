@@ -157,7 +157,11 @@ const isIgnorableOutputEntry = (entryName: string): boolean => {
     return true;
   }
 
-  return entryName.startsWith("._") || entryName.startsWith(".nfs");
+  return (
+    entryName.startsWith("._") ||
+    entryName.startsWith(".nfs") ||
+    entryName.startsWith(".DS_Store")
+  );
 };
 
 /**
@@ -1522,7 +1526,9 @@ export const finalizeTempOrganise = async (
     for (const entry of reviewedEntries) {
       const sourcePath = path.join(realTempPath, entry.name);
       const destinationPath = path.join(realTargetPath, entry.name);
+      const { atime, mtime } = await fs.stat(sourcePath);
       await fs.rename(sourcePath, destinationPath);
+      await fs.utimes(destinationPath, atime, mtime);
     }
 
     await fs.rm(realTempPath, { recursive: true, force: true });
@@ -1570,6 +1576,134 @@ export const finalizeTempOrganise = async (
 };
 
 /**
+ * @description Splits all files under targetPath into two folders (H1/H2) with balanced total size.
+ * Uses a greedy descending-size partition so the size difference between halves is minimised.
+ * Every file is guaranteed to end up in either H1 or H2 — none are ever skipped.
+ * @param targetPath Directory whose files will be split.
+ * @param onProgress Progress callback for UI updates.
+ * @returns Counts, sizes, and any problem files encountered during the split.
+ */
+const splitFilesIntoHalves = async (
+  targetPath: string,
+  onProgress: (update: ProgressUpdate) => void,
+): Promise<{
+  h1FileCount: number;
+  h2FileCount: number;
+  h1SizeBytes: number;
+  h2SizeBytes: number;
+  movedFilesCount: number;
+  warnings: Array<string>;
+  problemFiles: Array<ProblemFile>;
+}> => {
+  const warnings: Array<string> = [];
+  const problemFiles: Array<ProblemFile> = [];
+
+  onProgress({
+    processed: 0,
+    total: 0,
+    currentFile: null,
+    level: "info",
+    message: "Scanning files…",
+  });
+
+  const allFilePaths = await collectFilesRecursively(targetPath);
+
+  const filesWithSizes: Array<{ path: string; size: number }> = [];
+  for (const filePath of allFilePaths) {
+    const stat = await fs.stat(filePath).catch(() => null);
+    filesWithSizes.push({ path: filePath, size: stat?.size ?? 0 });
+  }
+
+  // Greedy largest-first partition — minimises the size imbalance between halves.
+  filesWithSizes.sort((a, b) => b.size - a.size);
+
+  const h1Files: Array<{ path: string; size: number }> = [];
+  const h2Files: Array<{ path: string; size: number }> = [];
+  let h1Total = 0;
+  let h2Total = 0;
+
+  for (const file of filesWithSizes) {
+    if (h1Total <= h2Total) {
+      h1Files.push(file);
+      h1Total += file.size;
+    } else {
+      h2Files.push(file);
+      h2Total += file.size;
+    }
+  }
+
+  const h1Path = path.join(targetPath, "H1");
+  await fs.mkdir(h1Path, { recursive: true });
+
+  // Only create H2 when there are files that belong there.
+  const h2Path = path.join(targetPath, "H2");
+  if (h2Files.length > 0) {
+    await fs.mkdir(h2Path, { recursive: true });
+  }
+
+  const totalFiles = allFilePaths.length;
+  let processed = 0;
+  let movedFilesCount = 0;
+
+  const moveToHalf = async (
+    file: { path: string; size: number },
+    destDir: string,
+    halfLabel: "H1" | "H2",
+  ): Promise<void> => {
+    const fileName = path.basename(file.path);
+    onProgress({
+      processed,
+      total: totalFiles,
+      currentFile: fileName,
+      level: "info",
+      message: `Moving ${fileName} → ${halfLabel}/`,
+    });
+    try {
+      const destPath = await resolveCollisionPath(
+        path.join(destDir, fileName),
+      );
+      const { atime, mtime } = await fs.stat(file.path);
+      await fs.rename(file.path, destPath);
+      await fs.utimes(destPath, atime, mtime);
+      movedFilesCount += 1;
+    } catch (err: unknown) {
+      const message = `Failed to move ${fileName}: ${normalizeError(err)}`;
+      warnings.push(message);
+      problemFiles.push({ filePath: file.path, message });
+    }
+    processed += 1;
+  };
+
+  for (const file of h1Files) {
+    await moveToHalf(file, h1Path, "H1");
+  }
+  for (const file of h2Files) {
+    await moveToHalf(file, h2Path, "H2");
+  }
+
+  // Clean up any directories that became empty after the moves.
+  await removeEmptyDirsRecursively(targetPath);
+
+  onProgress({
+    processed: totalFiles,
+    total: totalFiles,
+    currentFile: null,
+    level: "info",
+    message: "Halves split complete",
+  });
+
+  return {
+    h1FileCount: h1Files.length,
+    h2FileCount: h2Files.length,
+    h1SizeBytes: h1Total,
+    h2SizeBytes: h2Total,
+    movedFilesCount,
+    warnings,
+    problemFiles,
+  };
+};
+
+/**
  * @description Core organisation logic that operates on a target path.
  * @param targetPath Path to reorganise.
  * @param options Organisation options.
@@ -1580,13 +1714,20 @@ const performOrganisation = async (
   targetPath: string,
   options: {
     flattenMonthsToYears: boolean;
-    flattenYearsToRoot: boolean;
+    flattenAllToRoot: boolean;
     removeEmptyFolders: boolean;
+    flattenIntoHalves?: boolean;
   },
   onProgress: (update: ProgressUpdate) => void,
 ): Promise<{
   movedFilesCount: number;
   removedFoldersCount: number;
+  halvesReport?: {
+    h1FileCount: number;
+    h2FileCount: number;
+    h1SizeBytes: number;
+    h2SizeBytes: number;
+  };
   warnings: Array<string>;
   problemFiles: Array<ProblemFile>;
 }> => {
@@ -1595,8 +1736,12 @@ const performOrganisation = async (
   let movedFilesCount = 0;
   let removedFoldersCount = 0;
 
-  const { flattenMonthsToYears, flattenYearsToRoot, removeEmptyFolders } =
-    options;
+  const {
+    flattenMonthsToYears,
+    flattenAllToRoot,
+    removeEmptyFolders,
+    flattenIntoHalves,
+  } = options;
 
   // Count expected moves for accurate progress reporting.
   let totalMoves = 0;
@@ -1622,17 +1767,12 @@ const performOrganisation = async (
     }
   }
 
-  if (flattenYearsToRoot) {
-    const rootEntries = await fs.readdir(targetPath, {
-      withFileTypes: true,
-    });
-    for (const yearEntry of rootEntries) {
-      if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
-        continue;
+  if (flattenAllToRoot) {
+    const allFiles = await collectFilesRecursively(targetPath);
+    for (const filePath of allFiles) {
+      if (path.dirname(filePath) !== targetPath) {
+        totalMoves += 1;
       }
-      const yearPath = path.join(targetPath, yearEntry.name);
-      const yearFiles = await collectFilesRecursively(yearPath);
-      totalMoves += yearFiles.length;
     }
   }
 
@@ -1649,7 +1789,9 @@ const performOrganisation = async (
     const destPath = await resolveCollisionPath(
       path.join(destDir, path.basename(srcPath)),
     );
+    const { atime, mtime } = await fs.stat(srcPath);
     await fs.rename(srcPath, destPath);
+    await fs.utimes(destPath, atime, mtime);
     movedFilesCount += 1;
   };
 
@@ -1704,42 +1846,43 @@ const performOrganisation = async (
     }
   }
 
-  // Step 2 – flatten year folders into the target root.
-  if (flattenYearsToRoot) {
-    const rootEntries = await fs.readdir(targetPath, {
-      withFileTypes: true,
-    });
-    for (const yearEntry of rootEntries) {
-      if (!yearEntry.isDirectory() || !isYearFolder(yearEntry.name)) {
+  // Step 2 – flatten all files from every subfolder into the target root.
+  if (flattenAllToRoot) {
+    const allFiles = await collectFilesRecursively(targetPath);
+    for (const filePath of allFiles) {
+      if (path.dirname(filePath) === targetPath) {
         continue;
       }
-      const yearPath = path.join(targetPath, yearEntry.name);
-      const yearFiles = await collectFilesRecursively(yearPath);
-      for (const filePath of yearFiles) {
-        const fileName = path.basename(filePath);
-        onProgress({
-          processed,
-          total: totalMoves,
-          currentFile: fileName,
-          level: "info",
-          message: `Moving ${fileName} → root`,
-        });
-        try {
-          await moveFile(filePath, targetPath);
-          processed += 1;
-        } catch (moveError: unknown) {
-          const message = `Failed to move ${fileName}: ${normalizeError(moveError)}`;
-          warnings.push(message);
-          problemFiles.push({ filePath, message });
-          processed += 1;
-        }
-      }
-
-      // Remove the year directory tree if now empty.
+      const fileName = path.basename(filePath);
+      onProgress({
+        processed,
+        total: totalMoves,
+        currentFile: fileName,
+        level: "info",
+        message: `Moving ${fileName} → root`,
+      });
       try {
-        const remaining = await collectFilesRecursively(yearPath);
+        await moveFile(filePath, targetPath);
+        processed += 1;
+      } catch (moveError: unknown) {
+        const message = `Failed to move ${fileName}: ${normalizeError(moveError)}`;
+        warnings.push(message);
+        problemFiles.push({ filePath, message });
+        processed += 1;
+      }
+    }
+
+    // Remove now-empty subdirectory trees.
+    const rootEntries = await fs.readdir(targetPath, { withFileTypes: true });
+    for (const entry of rootEntries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const subPath = path.join(targetPath, entry.name);
+      try {
+        const remaining = await collectFilesRecursively(subPath);
         if (remaining.length === 0) {
-          await fs.rm(yearPath, { recursive: true });
+          await fs.rm(subPath, { recursive: true });
           removedFoldersCount += 1;
         }
       } catch {
@@ -1753,17 +1896,41 @@ const performOrganisation = async (
     removedFoldersCount += await removeEmptyDirsRecursively(targetPath);
   }
 
-  onProgress({
-    processed: totalMoves,
-    total: totalMoves,
-    currentFile: null,
-    level: "info",
-    message: "Organisation complete",
-  });
+  // Step 4 – split all files into two size-balanced halves (H1 / H2).
+  let halvesReport:
+    | {
+        h1FileCount: number;
+        h2FileCount: number;
+        h1SizeBytes: number;
+        h2SizeBytes: number;
+      }
+    | undefined;
+
+  if (flattenIntoHalves) {
+    const halvesResult = await splitFilesIntoHalves(targetPath, onProgress);
+    movedFilesCount += halvesResult.movedFilesCount;
+    warnings.push(...halvesResult.warnings);
+    problemFiles.push(...halvesResult.problemFiles);
+    halvesReport = {
+      h1FileCount: halvesResult.h1FileCount,
+      h2FileCount: halvesResult.h2FileCount,
+      h1SizeBytes: halvesResult.h1SizeBytes,
+      h2SizeBytes: halvesResult.h2SizeBytes,
+    };
+  } else {
+    onProgress({
+      processed: totalMoves,
+      total: totalMoves,
+      currentFile: null,
+      level: "info",
+      message: "Organisation complete",
+    });
+  }
 
   return {
     movedFilesCount,
     removedFoldersCount,
+    ...(halvesReport !== undefined ? { halvesReport } : {}),
     warnings,
     problemFiles,
   };
@@ -1809,9 +1976,14 @@ export const postProcessFolder = async (
         const source = path.join(request.targetPath, entry.name);
         const destination = path.join(workPath, entry.name);
         if (entry.isDirectory()) {
-          await fs.cp(source, destination, { recursive: true });
+          await fs.cp(source, destination, {
+            recursive: true,
+            preserveTimestamps: true,
+          });
         } else {
+          const { atime, mtime } = await fs.stat(source);
           await fs.copyFile(source, destination);
+          await fs.utimes(destination, atime, mtime);
         }
       }
     }
@@ -1831,6 +2003,7 @@ export const postProcessFolder = async (
         removedFoldersCount: result.removedFoldersCount,
         problemFiles: result.problemFiles,
         ...(useTemp ? { tempFolderPath: workPath } : {}),
+        ...(result.halvesReport ? { halvesReport: result.halvesReport } : {}),
       },
     };
   } catch (error: unknown) {

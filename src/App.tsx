@@ -260,10 +260,11 @@ const App = () => {
     message: "",
   });
   const [orgOptions, setOrgOptions] = useState<PostProcessOptions>({
-    flattenMonthsToYears: true,
-    flattenYearsToRoot: false,
+    flattenMonthsToYears: false,
+    flattenAllToRoot: false,
     removeEmptyFolders: true,
-    createTempFolderForReview: false,
+    createTempFolderForReview: true,
+    flattenIntoHalves: false,
   });
   const orgLogsContainerRef = useRef<HTMLDivElement | null>(null);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -1028,8 +1029,29 @@ const App = () => {
    * @returns Nothing.
    */
   const handleOrgOptionToggle = (key: keyof PostProcessOptions): void => {
-    setOrgOptions((current) => ({ ...current, [key]: !current[key] }));
+    setOrgOptions((current) => {
+      const next = { ...current, [key]: !current[key] };
+      // All three folder options are mutually exclusive.
+      if (key === "flattenMonthsToYears" && next.flattenMonthsToYears) {
+        next.flattenAllToRoot = false;
+        next.flattenIntoHalves = false;
+      }
+      if (key === "flattenAllToRoot" && next.flattenAllToRoot) {
+        next.flattenMonthsToYears = false;
+        next.flattenIntoHalves = false;
+      }
+      if (key === "flattenIntoHalves" && next.flattenIntoHalves) {
+        next.flattenMonthsToYears = false;
+        next.flattenAllToRoot = false;
+      }
+      return next;
+    });
   };
+
+  const hasFolderActionSelected =
+    orgOptions.flattenMonthsToYears ||
+    orgOptions.flattenAllToRoot ||
+    Boolean(orgOptions.flattenIntoHalves);
 
   /**
    * @description Validates state and starts folder organisation through the Electron bridge.
@@ -1045,12 +1067,8 @@ const App = () => {
       return;
     }
 
-    const actionsEnabled =
-      orgOptions.flattenMonthsToYears ||
-      orgOptions.flattenYearsToRoot ||
-      orgOptions.removeEmptyFolders;
-    if (!actionsEnabled) {
-      setOrgWarningText("At least one organisation action must be enabled.");
+    if (!hasFolderActionSelected) {
+      setOrgWarningText("Select a folder action before starting.");
       return;
     }
 
@@ -2076,7 +2094,7 @@ const App = () => {
                     </p>
                     <Accordion theme={theme}>
                       <AccordionItem
-                        value="org-options"
+                        value="org-folder-options"
                         title="Folder options"
                         theme={theme}
                       >
@@ -2091,14 +2109,74 @@ const App = () => {
                             isLightTheme={isLightTheme}
                           />
                           <CheckboxRow
-                            label="Flatten years into root"
-                            checked={orgOptions.flattenYearsToRoot}
+                            label={
+                              <>
+                                Flatten all data to selected folder
+                                <span className="group/org-flatten-all-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-flatten-all-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Recursively moves every file from all
+                                    sub-folders directly into the selected
+                                    folder, regardless of how deeply nested
+                                    they are. All empty sub-folders are removed
+                                    afterwards. Not compatible with other folder
+                                    options.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={orgOptions.flattenAllToRoot}
                             onChange={() => {
-                              handleOrgOptionToggle("flattenYearsToRoot");
+                              handleOrgOptionToggle("flattenAllToRoot");
                             }}
                             disabled={isOrgProcessing}
                             isLightTheme={isLightTheme}
                           />
+                          <CheckboxRow
+                            label={
+                              <>
+                                Flatten data into halves
+                                <span className="group/org-halves-help relative inline-flex h-5 w-5 items-center justify-center">
+                                  <Info
+                                    className={`h-4 w-4 ${isLightTheme ? "text-[#5b7ea7]" : "text-[#8dbde8]"}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span
+                                    className={`pointer-events-none absolute left-full top-1/2 z-30 ml-2 w-80 -translate-y-1/2 rounded-xl border p-3 text-left font-body text-xs leading-relaxed opacity-0 shadow-lg transition group-hover/org-halves-help:opacity-100 ${isLightTheme ? "border-[#5f8dbf]/35 bg-[#f8fbff] text-[#395170]" : "border-[#61afef]/30 bg-[#1f2634]/95 text-[#c7d4e7]"}`}
+                                  >
+                                    Recursively scans the selected folder and
+                                    creates two sub-folders named{" "}
+                                    <strong>H1</strong> and{" "}
+                                    <strong>H2</strong>, distributing all files
+                                    as evenly as possible by total size. Every
+                                    file is always included — if a perfect split
+                                    isn&apos;t possible, the remainder goes into
+                                    H1. Not compatible with other folder
+                                    options.
+                                  </span>
+                                </span>
+                              </>
+                            }
+                            checked={Boolean(orgOptions.flattenIntoHalves)}
+                            onChange={() => {
+                              handleOrgOptionToggle("flattenIntoHalves");
+                            }}
+                            disabled={isOrgProcessing}
+                            isLightTheme={isLightTheme}
+                          />
+                        </div>
+                      </AccordionItem>
+                      <AccordionItem
+                        value="org-supporting-options"
+                        title="Supporting options"
+                        theme={theme}
+                      >
+                        <div className="grid grid-cols-1 gap-3">
                           <CheckboxRow
                             label="Remove empty folders"
                             checked={orgOptions.removeEmptyFolders}
@@ -2122,8 +2200,8 @@ const App = () => {
                                   >
                                     Runs organisation in a temporary folder
                                     inside your selected directory so you can
-                                    review the result first. Keep this off for
-                                    direct in-place organisation.
+                                    review the result first. Compatible with any
+                                    folder option.
                                   </span>
                                 </span>
                               </>
@@ -2142,6 +2220,13 @@ const App = () => {
                         </div>
                       </AccordionItem>
                     </Accordion>
+                    {!hasFolderActionSelected && (
+                      <p
+                        className={`mt-3 rounded-xl px-3 py-2 font-body text-xs ${isLightTheme ? "bg-amber-50 text-amber-700" : "bg-amber-500/10 text-amber-300/90"}`}
+                      >
+                        Select a folder action to enable organising.
+                      </p>
+                    )}
                   </aside>
                 </div>
 
@@ -2151,7 +2236,11 @@ const App = () => {
                     onClick={() => {
                       void handleOrgStart();
                     }}
-                    disabled={isOrgProcessing || !orgSelectedFolder}
+                    disabled={
+                      isOrgProcessing ||
+                      !orgSelectedFolder ||
+                      !hasFolderActionSelected
+                    }
                     className={`inline-flex h-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-[#56b6c2] via-[#61afef] to-[#c678dd] px-4 py-3 font-display text-xl font-semibold text-[#1b1f2a] transition hover:from-[#7ad0da] hover:via-[#83c3ff] hover:to-[#d99bf0] disabled:cursor-not-allowed disabled:text-[#8f97a6] ${isLightTheme ? "disabled:from-[#c6cdd8] disabled:via-[#c6cdd8] disabled:to-[#c6cdd8]" : "disabled:from-[#5a6271] disabled:via-[#5a6271] disabled:to-[#5a6271] disabled:text-[#c5ccd9]"}`}
                   >
                     {isOrgProcessing ? (
