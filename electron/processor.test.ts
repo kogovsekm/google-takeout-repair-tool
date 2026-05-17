@@ -1132,7 +1132,8 @@ describe("syncTimestampsInFolder via postProcessFolder", () => {
     expect(summary.report.timestampSyncReport?.successCount).toBe(1);
 
     const writeInstance = mockExifToolInstances[mockExifToolInstances.length - 1];
-    const writeCalls = writeInstance.write.mock.calls;
+    expect(writeInstance).toBeDefined();
+    const writeCalls = writeInstance!.write.mock.calls;
     const fileCreateDateCall = writeCalls.find(
       ([, tags]) => (tags as Record<string, unknown>).FileCreateDate !== undefined,
     );
