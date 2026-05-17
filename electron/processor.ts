@@ -1703,6 +1703,179 @@ const splitFilesIntoHalves = async (
   };
 };
 
+type TimestampSyncMode =
+  | "writeModifiedToCreated"
+  | "writeCreatedToModified"
+  | "coerceBothToLowest";
+
+/**
+ * @description Synchronises filesystem and embedded EXIF date timestamps for all
+ *   media files under a directory according to the chosen mode.
+ * @param targetPath Directory to scan recursively.
+ * @param mode Which timestamp alignment rule to apply.
+ * @param exiftoolClient Shared ExifTool instance for reading and writing EXIF tags.
+ * @param onProgress Progress callback for UI updates.
+ * @returns Counts plus any warnings and problem files.
+ */
+const syncTimestampsInFolder = async (
+  targetPath: string,
+  mode: TimestampSyncMode,
+  exiftoolClient: ExifToolClient,
+  onProgress: (update: ProgressUpdate) => void,
+): Promise<{
+  report: { processedCount: number; successCount: number };
+  warnings: Array<string>;
+  problemFiles: Array<ProblemFile>;
+}> => {
+  const warnings: Array<string> = [];
+  const problemFiles: Array<ProblemFile> = [];
+  let processedCount = 0;
+  let successCount = 0;
+
+  const allFiles = await collectFilesRecursively(targetPath);
+  const mediaFiles = allFiles.filter(isMediaFile);
+  const total = mediaFiles.length;
+
+  onProgress({
+    processed: 0,
+    total,
+    currentFile: null,
+    level: "info",
+    message: "Starting timestamp sync…",
+  });
+
+  for (const filePath of mediaFiles) {
+    const fileName = path.basename(filePath);
+    onProgress({
+      processed: processedCount,
+      total,
+      currentFile: fileName,
+      level: "info",
+      message: `Syncing timestamps: ${fileName}`,
+    });
+
+    processedCount += 1;
+
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(filePath);
+    } catch (statError: unknown) {
+      const message = `Failed to read file info for ${fileName}: ${normalizeError(statError)}`;
+      warnings.push(message);
+      problemFiles.push({ filePath, message });
+      continue;
+    }
+
+    const { mtime, birthtime, atime } = stat;
+
+    const target =
+      mode === "writeModifiedToCreated"
+        ? mtime
+        : mode === "writeCreatedToModified"
+          ? birthtime
+          : mtime.getTime() <= birthtime.getTime()
+            ? mtime
+            : birthtime;
+
+      // Guard against Linux filesystems that return epoch for birthtime.
+      if (
+        (mode === "writeCreatedToModified" || mode === "coerceBothToLowest") &&
+        birthtime.getTime() === 0
+      ) {
+        const message = `Skipping ${fileName}: filesystem does not provide a creation date on this platform.`;
+        warnings.push(message);
+        problemFiles.push({ filePath, message });
+        continue;
+      }
+
+    try {
+      if (mode === "writeCreatedToModified") {
+        await fs.utimes(filePath, atime, target);
+      }
+
+      if (mode === "coerceBothToLowest" && target.getTime() !== mtime.getTime()) {
+        await fs.utimes(filePath, atime, target);
+      }
+
+      if (
+        mode === "writeModifiedToCreated" ||
+        (mode === "coerceBothToLowest" && target.getTime() !== birthtime.getTime())
+      ) {
+        await exiftoolClient.write(
+          filePath,
+          // FileCreateDate is a valid exiftool tag but absent from the vendored
+          // WriteTags type definition — cast to bypass the type restriction.
+          { FileCreateDate: target } as Parameters<typeof exiftoolClient.write>[1],
+          ["-overwrite_original"],
+        );
+      }
+
+      // Update embedded EXIF date tags that exist in the file and differ from target.
+      const exifTags = await exiftoolClient.read(filePath);
+      const targetSeconds = Math.floor(target.getTime() / 1000);
+      const exifDateValue = toExifDate(target);
+      const isoDateValue = toIsoDate(target);
+      const exifWrites: Record<string, string> = {};
+
+      const queueIfDiffers = (tagName: string, rawValue: unknown): void => {
+        if (rawValue == null) {
+          return;
+        }
+        let existingSeconds: number | null = null;
+        if (
+          typeof rawValue === "object" &&
+          typeof (rawValue as { toDate?: () => Date }).toDate === "function"
+        ) {
+          const d = (rawValue as { toDate: () => Date }).toDate();
+          existingSeconds = Math.floor(d.getTime() / 1000);
+        }
+        // existingSeconds is null when the tag value is a raw string or number
+        // (exiftool-vendored fallback for unparseable dates). Write conservatively.
+        if (existingSeconds === null || existingSeconds !== targetSeconds) {
+          exifWrites[tagName] = tagName.startsWith("XMP")
+            ? isoDateValue
+            : exifDateValue;
+        }
+      };
+
+      const tags = exifTags as Record<string, unknown>;
+      queueIfDiffers("DateTimeOriginal", tags.DateTimeOriginal);
+      queueIfDiffers("CreateDate", tags.CreateDate);
+      queueIfDiffers("ModifyDate", tags.ModifyDate);
+      queueIfDiffers("MediaCreateDate", tags.MediaCreateDate);
+      queueIfDiffers("TrackCreateDate", tags.TrackCreateDate);
+      queueIfDiffers("TrackModifyDate", tags.TrackModifyDate);
+      queueIfDiffers("XMP:DateTimeOriginal", tags["XMP:DateTimeOriginal"]);
+      queueIfDiffers("XMP:CreateDate", tags["XMP:CreateDate"]);
+      queueIfDiffers("XMP:ModifyDate", tags["XMP:ModifyDate"]);
+
+      if (Object.keys(exifWrites).length > 0) {
+        await exiftoolClient.write(filePath, exifWrites, ["-overwrite_original"]);
+      }
+
+      successCount += 1;
+    } catch (syncError: unknown) {
+      const message = `Failed to sync timestamps for ${fileName}: ${normalizeError(syncError)}`;
+      warnings.push(message);
+      problemFiles.push({ filePath, message });
+    }
+  }
+
+  onProgress({
+    processed: total,
+    total,
+    currentFile: null,
+    level: "info",
+    message: "Timestamp sync complete",
+  });
+
+  return {
+    report: { processedCount, successCount },
+    warnings,
+    problemFiles,
+  };
+};
+
 /**
  * @description Core organisation logic that operates on a target path.
  * @param targetPath Path to reorganise.
@@ -1985,6 +2158,48 @@ export const postProcessFolder = async (
           await fs.copyFile(source, destination);
           await fs.utimes(destination, atime, mtime);
         }
+      }
+    }
+
+    const isTimestampMode =
+      Boolean(request.options.writeModifiedToCreated) ||
+      Boolean(request.options.writeCreatedToModified) ||
+      Boolean(request.options.coerceBothToLowest);
+
+    if (isTimestampMode) {
+      const mode: TimestampSyncMode = request.options.writeModifiedToCreated
+        ? "writeModifiedToCreated"
+        : request.options.writeCreatedToModified
+          ? "writeCreatedToModified"
+          : "coerceBothToLowest";
+
+      const exiftoolClient = new ExifTool({
+        taskTimeoutMillis: EXIFTOOL_METADATA_TIMEOUT_MS,
+      });
+
+      try {
+        const tsResult = await syncTimestampsInFolder(
+          workPath,
+          mode,
+          exiftoolClient,
+          onProgress,
+        );
+        return {
+          warnings: tsResult.warnings,
+          durationMs: Date.now() - startedAt,
+          report: {
+            targetPath: request.targetPath,
+            movedFilesCount: 0,
+            removedFoldersCount: 0,
+            problemFiles: tsResult.problemFiles,
+            timestampSyncReport: tsResult.report,
+            ...(useTemp ? { tempFolderPath: workPath } : {}),
+          },
+        };
+      } finally {
+        await exiftoolClient.end(false).catch(() => {
+          return;
+        });
       }
     }
 
